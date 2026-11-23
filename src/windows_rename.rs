@@ -7,8 +7,13 @@ use std::{
     ptr,
 };
 
-use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle,
+use windows_sys::{
+    Wdk::Storage::FileSystem::{FileRenameInformation, NtSetInformationFile},
+    Win32::{
+        Foundation::RtlNtStatusToDosError,
+        Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO},
+        System::IO::IO_STATUS_BLOCK,
+    },
 };
 
 use crate::{
@@ -65,9 +70,10 @@ fn rename_handle(directory: &File, entry: &File, target: &str) -> io::Result<()>
     let mut buffer = vec![0usize; buffer_size.div_ceil(mem::size_of::<usize>())];
     let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
 
+    let mut io_status = IO_STATUS_BLOCK::default();
     // SAFETY: The aligned, zero-initialized buffer includes the header and full UTF-16 name.
     // Both file handles stay open for the duration of the call. The zero flags forbid replacement.
-    let success = unsafe {
+    let status = unsafe {
         (*info).RootDirectory = directory.as_raw_handle();
         (*info).FileNameLength = name_bytes as u32;
         ptr::copy_nonoverlapping(
@@ -75,18 +81,22 @@ fn rename_handle(directory: &File, entry: &File, target: &str) -> io::Result<()>
             ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
             name.len(),
         );
-        SetFileInformationByHandle(
+        NtSetInformationFile(
             entry.as_raw_handle(),
-            FileRenameInfo,
+            &mut io_status,
             info.cast(),
             buffer_size as u32,
+            FileRenameInformation,
         )
     };
 
-    if success == 0 {
-        Err(io::Error::last_os_error())
-    } else {
+    if status == 0 {
         Ok(())
+    } else {
+        // SAFETY: The conversion accepts any NTSTATUS value.
+        Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(status) } as i32,
+        ))
     }
 }
 
