@@ -174,3 +174,41 @@ fn rejects_a_replacement_at_the_same_source_name() {
     assert_eq!(fs::read(&source).unwrap(), b"same content");
     assert!(!root.join("_CON.txt").exists());
 }
+
+#[cfg(windows)]
+#[test]
+fn checks_exact_windows_names_and_rejects_replacements_and_occupied_targets() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("source");
+    fs::create_dir(&root).unwrap();
+    // The verbatim path preserves the trailing period in the test name.
+    let exact_root = root.canonicalize().unwrap();
+    let source = exact_root.join("März.txt.");
+    let target = exact_root.join("März.txt");
+    fs::write(&source, "same content").unwrap();
+    let plan = workspace.path().join("plan.json");
+
+    let result = export(&root, &plan);
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let report: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
+    assert_eq!(report["proposals"][0]["source"], "März.txt.");
+    assert_eq!(report["proposals"][0]["target"], "März.txt");
+    assert_eq!(report["identities"]["sources"][0]["platform"], "windows");
+    let result = verify(&plan);
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+
+    fs::write(&target, "occupied").unwrap();
+    let result = verify(&plan);
+    assert_eq!(result.status.code(), Some(2), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("naming conflict"));
+    assert_eq!(fs::read(&source).unwrap(), b"same content");
+    assert_eq!(fs::read(&target).unwrap(), b"occupied");
+    fs::remove_file(&target).unwrap();
+
+    fs::rename(&source, exact_root.join("previous.txt")).unwrap();
+    fs::write(&source, "same content").unwrap();
+    let result = verify(&plan);
+    assert_eq!(result.status.code(), Some(2), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("was replaced"));
+    assert!(!target.exists());
+}

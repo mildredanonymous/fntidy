@@ -1,0 +1,20 @@
+name: Windows x64
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Build and test
+        run: |
+          rustup update stable
+          cargo +stable build --locked --target x86_64-pc-windows-msvc
+          cargo +stable test --locked --target x86_64-pc-windows-msvc
