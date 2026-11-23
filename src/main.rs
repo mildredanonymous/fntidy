@@ -4,6 +4,8 @@ mod windows_rename;
 mod check;
 mod directory;
 mod identity;
+#[cfg(test)]
+mod journal;
 mod plan;
 mod windows_names;
 
