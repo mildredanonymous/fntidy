@@ -61,4 +61,26 @@ sibling or another proposed target is blocked. Colliding names without a
 default repair also block the preview. Exit code `0` means the preview
 completed, `1` means a conflict or target needs manual review, and `2` means
 the invocation was invalid or the scan was incomplete. The preview performs
-no renames and currently outputs text only.
+no renames.
+
+To save the preview to a new UTF-8 JSON file:
+
+```powershell
+cargo run --locked -- plan "D:\Export" --out plan.json
+```
+
+An existing output file is preserved and the command returns exit code `2`.
+The JSON contains `schema_version`, `root` (the absolute directory path),
+`profile`, `profile_version`, `status` (`ready`, `blocked`, or `incomplete`),
+`proposals`, and `collisions`. Each proposal records the relative `source`
+and `target` names, rule IDs, and a status of `proposed`, `invalid_target`,
+`proposed_collision`, or `existing_sibling`. Collision groups list the
+relative names of all involved entries. Blocked and incomplete scans can be
+exported for inspection and retain their corresponding exit code. A scan that
+cannot open the directory produces no report. The JSON currently captures a
+preview snapshot. Applying saved plans is a future feature.
+
+The exporter uses [Serde](https://serde.rs/) and
+[serde_json](https://docs.rs/serde_json/) for JSON mapping and escaping,
+and [tempfile](https://docs.rs/tempfile/) to publish the completed file
+without overwriting an existing output.
