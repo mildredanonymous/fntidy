@@ -32,19 +32,33 @@ pub fn read(path: &Path) -> io::Result<Identity> {
 
 #[cfg(windows)]
 pub fn read(path: &Path) -> io::Result<Identity> {
-    use std::os::windows::{
-        fs::{MetadataExt, OpenOptionsExt},
-        io::AsRawHandle,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE};
+
+    let file = open(path, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE)?;
+    from_handle(&file)
+}
+
+#[cfg(windows)]
+pub fn open(path: &Path, access: u32, extra_sharing: u32) -> io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_ID_INFO, FILE_READ_ATTRIBUTES, FileIdInfo, GetFileInformationByHandleEx,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
 
-    let file = fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES)
+    fs::OpenOptions::new()
+        .access_mode(access)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | extra_sharing)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
+        .open(path)
+}
+
+#[cfg(windows)]
+pub fn from_handle(file: &fs::File) -> io::Result<Identity> {
+    use std::os::windows::{fs::MetadataExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
+
     let metadata = file.metadata()?;
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::other("the entry is a reparse point"));

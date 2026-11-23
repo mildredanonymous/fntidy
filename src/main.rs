@@ -1,3 +1,6 @@
+#[cfg(all(windows, test))]
+mod windows_rename;
+
 mod check;
 mod directory;
 mod identity;
