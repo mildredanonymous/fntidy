@@ -1,5 +1,6 @@
 mod check;
 mod directory;
+mod identity;
 mod plan;
 mod windows_names;
 

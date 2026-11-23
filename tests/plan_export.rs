@@ -28,13 +28,15 @@ fn exports_a_versioned_plan_and_preserves_existing_output() {
     assert_eq!(result.status.code(), Some(0), "{result:?}");
     let original = fs::read(&path).unwrap();
     let plan: Value = serde_json::from_slice(&original).unwrap();
-    assert_eq!(plan["schema_version"], 1);
+    assert_eq!(plan["schema_version"], 2);
     assert_eq!(plan["profile"], "windows");
     assert_eq!(plan["profile_version"], 1);
     assert_eq!(plan["status"], "ready");
     assert_eq!(plan["root"], root.to_str().unwrap());
     assert_eq!(plan["proposals"], serde_json::json!([]));
     assert_eq!(plan["collisions"], serde_json::json!([]));
+    assert!(plan["identities"]["root"].is_object());
+    assert_eq!(plan["identities"]["sources"], serde_json::json!([]));
 
     assert_eq!(export(&root, &path).status.code(), Some(2));
     assert_eq!(fs::read(&path).unwrap(), original);
@@ -133,4 +135,42 @@ fn rejects_changed_proposals_and_newly_occupied_targets_without_renaming() {
     let result = verify(&path);
     assert_eq!(result.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&result.stderr).contains("differ"));
+}
+
+#[test]
+fn rejects_a_replaced_root_with_the_same_preview() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("source");
+    fs::create_dir(&root).unwrap();
+    let path = workspace.path().join("plan.json");
+
+    assert_eq!(export(&root, &path).status.code(), Some(0));
+    fs::rename(&root, workspace.path().join("previous")).unwrap();
+    fs::create_dir(&root).unwrap();
+
+    let result = verify(&path);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("directory was replaced"));
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_a_replacement_at_the_same_source_name() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("source");
+    fs::create_dir(&root).unwrap();
+    let source = root.join("CON.txt");
+    let plan = workspace.path().join("plan.json");
+    fs::write(&source, "same content").unwrap();
+
+    assert_eq!(export(&root, &plan).status.code(), Some(0));
+    assert_eq!(verify(&plan).status.code(), Some(0));
+    fs::rename(&source, workspace.path().join("previous.txt")).unwrap();
+    fs::write(&source, "same content").unwrap();
+
+    let result = verify(&plan);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("source \"CON.txt\" was replaced"));
+    assert_eq!(fs::read(&source).unwrap(), b"same content");
+    assert!(!root.join("_CON.txt").exists());
 }

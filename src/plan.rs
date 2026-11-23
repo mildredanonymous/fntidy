@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     directory::{self, display},
+    identity::{self, Identity},
     windows_names,
 };
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const PROFILE_VERSION: u32 = 1;
 
 #[derive(Deserialize, Serialize)]
@@ -27,7 +28,16 @@ struct Report {
     profile_version: u32,
     status: Status,
     proposals: Vec<Proposal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identities: Option<PlanIdentities>,
     collisions: Vec<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PlanIdentities {
+    root: Identity,
+    sources: Vec<Identity>,
 }
 
 struct Preview {
@@ -261,7 +271,66 @@ fn verify_report(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
             "The saved proposals differ from the current preview. Create a fresh plan.".into(),
         );
     }
+    let expected = report
+        .identities
+        .ok_or("The saved plan lacks file identities. Create a fresh plan.")?;
+    let actual = capture_identities(root, &current.proposals)?;
+    if expected.root != actual.root {
+        return Err("The saved directory was replaced. Create a fresh plan.".into());
+    }
+    if expected.sources.len() != actual.sources.len() {
+        return Err("The saved plan lacks source identities. Create a fresh plan.".into());
+    }
+    for ((expected, actual), proposal) in expected
+        .sources
+        .iter()
+        .zip(&actual.sources)
+        .zip(&current.proposals)
+    {
+        if expected != actual {
+            return Err(format!(
+                "The source {} was replaced. Create a fresh plan.",
+                display(OsStr::new(&proposal.source))
+            )
+            .into());
+        }
+    }
     Ok(report.proposals.len())
+}
+
+fn capture_identities(root: &Path, proposals: &[Proposal]) -> io::Result<PlanIdentities> {
+    let root_identity = identity::read(root)?;
+    // On Windows canonicalize gives a verbatim base path for exact entry names.
+    let base = root.canonicalize()?;
+    if identity::read(&base)? != root_identity {
+        return Err(io::Error::other(
+            "the directory changed while recording identities",
+        ));
+    }
+    let sources = proposals
+        .iter()
+        .map(|proposal| {
+            let source = Path::new(&proposal.source);
+            if !matches!(source.components().next(), Some(std::path::Component::Normal(name)) if name == source.as_os_str())
+                || (cfg!(windows) && proposal.source.contains(':'))
+            {
+                return Err(io::Error::other("the source is not an unambiguous filename"));
+            }
+            identity::read(&base.join(source)).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Cannot read the identity of {}: {error}",
+                        display(OsStr::new(&proposal.source))
+                    ),
+                )
+            })
+        })
+        .collect::<io::Result<_>>()?;
+    Ok(PlanIdentities {
+        root: root_identity,
+        sources,
+    })
 }
 
 fn export(root: &Path, output: &Path, preview: Preview) -> io::Result<()> {
@@ -278,6 +347,9 @@ fn export(root: &Path, output: &Path, preview: Preview) -> io::Result<()> {
         profile: windows_names::PROFILE.to_owned(),
         profile_version: PROFILE_VERSION,
         status: preview.status,
+        identities: (preview.status == Status::Ready)
+            .then(|| capture_identities(&absolute_root, &preview.proposals))
+            .transpose()?,
         proposals: preview.proposals,
         collisions: preview.collisions,
     };

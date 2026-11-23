@@ -91,13 +91,23 @@ without overwriting an existing output.
 cargo run --locked -- verify-plan plan.json
 ```
 
-The command reads the saved plan and scans its directory again. It returns
-exit code `0` if the saved proposals match the current ready preview, or `2`
-if the plan cannot be verified. This includes unsupported versions, blocked
-or incomplete scans, changed proposals, and newly occupied targets. Proposals
-are compared as data. Saved source and target strings are never used as
-filesystem paths during verification.
+The command checks the saved proposals against a fresh scan and compares
+the filesystem identity of the root directory and each proposed source.
+It returns exit code `0` on success or `2` if verification fails. Failures
+include changed proposals, newly occupied targets, and replaced entries.
+Identity checks use the fresh scan's source names. The command performs no
+renames.
 
-Verification checks the naming preview at the time of the scan. File identity,
-changes to content at the same name, and filesystem changes after the scan
-are outside its scope. The command performs no renames.
+Ready exports use schema version 2 and store the root identity and one
+source identity per proposal in matching order. Regenerate earlier exports
+before verifying them. Blocked and incomplete previews omit identities.
+If an identity cannot be read, exporting a ready plan or verifying it fails.
+
+On Windows, the identity includes volume serial number, 128-bit file ID
+and creation time. Linux development uses device and inode numbers.
+A matching identity is a point-in-time check: filesystems can reuse
+identifiers, edits in place can preserve identity, and execution still
+needs its own checks.
+
+The Windows identity query uses [windows-sys](https://docs.rs/windows-sys/)
+for Microsoft's [FileIdInfo API](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info).
