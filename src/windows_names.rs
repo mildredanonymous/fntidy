@@ -33,10 +33,32 @@ impl Rule {
     }
 }
 
-pub fn violations(name: &str) -> impl Iterator<Item = Rule> {
-    let invalid_character = name
+fn is_invalid_character(character: char) -> bool {
+    character <= '\u{1f}' || r#"<>:"/\|?*"#.contains(character)
+}
+
+pub fn repair(name: &str) -> Option<String> {
+    if violations(name).next().is_none() {
+        return None;
+    }
+    let mut target = comparison_name(name)
         .chars()
-        .any(|character| character <= '\u{1f}' || r#"<>:"/\|?*"#.contains(character));
+        .map(|character| {
+            if is_invalid_character(character) {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if target.is_empty() || violations(&target).any(|rule| rule == Rule::ReservedDevice) {
+        target.insert(0, '_');
+    }
+    Some(target)
+}
+
+pub fn violations(name: &str) -> impl Iterator<Item = Rule> {
+    let invalid_character = name.chars().any(is_invalid_character);
     let stem = comparison_name(name)
         .split('.')
         .next()
@@ -131,6 +153,20 @@ pub fn comparison_units(name: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repairs_names_without_changing_valid_unicode() {
+        for (source, expected) in [
+            ("CON.txt", "_CON.txt"),
+            ("März 👩🏽‍💻?.pdf ", "März 👩🏽‍💻_.pdf"),
+            ("Berichte.", "Berichte"),
+            ("...", "_"),
+        ] {
+            assert_eq!(repair(source).as_deref(), Some(expected));
+            assert_eq!(repair(expected), None);
+        }
+        assert_eq!(repair("März 👩🏽‍💻.pdf"), None);
+    }
 
     #[test]
     fn detects_reserved_devices_with_extensions() {

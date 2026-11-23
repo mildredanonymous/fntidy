@@ -1,9 +1,11 @@
 mod check;
+mod directory;
+mod plan;
 mod windows_names;
 
 use std::{env, path::Path, process::ExitCode};
 
-const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory>";
+const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory>\n       fntidy plan <directory>";
 
 fn main() -> ExitCode {
     let mut arguments = env::args_os().skip(1);
@@ -16,6 +18,9 @@ fn main() -> ExitCode {
         }
         (Some(command), Some(directory)) if command == "check" && arguments.next().is_none() => {
             return check::run(Path::new(&directory));
+        }
+        (Some(command), Some(directory)) if command == "plan" && arguments.next().is_none() => {
+            return plan::run(Path::new(&directory));
         }
         _ => {
             eprintln!("Invalid arguments. Run fntidy --help for usage.");

@@ -43,3 +43,22 @@ invocation or incomplete check. Code `2` takes precedence when both apply.
 Windows naming rules are based on
 [Microsoft's file naming documentation](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file).
 [Detox](https://github.com/dharple/detox) is a reference for filename cleanup.
+
+## Preview renames
+
+```powershell
+cargo run --locked -- plan "D:\Export"
+```
+
+The preview uses the same directory scan and Windows profile as `check`.
+It replaces each forbidden character with an underscore, removes trailing
+periods and ASCII spaces, and adds a leading underscore to reserved device
+names and names that would otherwise become empty. For example, `CON.txt`
+becomes `_CON.txt`. Existing Unicode and valid extensions are preserved.
+
+Targets must fit within 255 UTF-16 code units. A target that matches an existing
+sibling or another proposed target is blocked. Colliding names without a
+default repair also block the preview. Exit code `0` means the preview
+completed, `1` means a conflict or target needs manual review, and `2` means
+the invocation was invalid or the scan was incomplete. The preview performs
+no renames and currently outputs text only.
