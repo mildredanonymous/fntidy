@@ -12,9 +12,34 @@ cargo run --locked -- --version
 cargo test --locked
 ```
 
-The initial CLI provides a help and version entry point. The first feature
-milestone is a read-only `check` for the Windows naming profile. The intended
-test boundaries are name rules, rename planning, Windows filesystem operations,
-and CLI output.
+## Check a directory
 
+```powershell
+cargo run --locked -- check "D:\Export"
+```
+
+The read-only `check` command inspects direct file and folder names with the
+`windows` profile. Findings identify the relative name and the rule. The
+selected directory itself is outside the naming check. Links and other
+reparse points are skipped and reported on stderr. They still occupy a sibling
+name for collision detection.
+
+| Rule ID | Condition |
+| --- | --- |
+| `WIN_INVALID_CHARACTER` | A Windows-forbidden punctuation character or a control character U+0000–U+001F |
+| `WIN_TRAILING_DOT_OR_SPACE` | A final period or ASCII space |
+| `WIN_RESERVED_DEVICE` | A reserved device name, including names with extensions and COM/LPT suffixes ¹, ² or ³ |
+| `WIN_NAME_COLLISION` | Another sibling name matches after removing trailing periods and ASCII spaces and comparing without case |
+
+The collision check targets typical case-insensitive Win32 naming. On Windows it
+uses ordinal comparison. Other development platforms approximate it with simple
+uppercase mappings. This check does not model volume-specific case rules or path
+length limits. Names that cannot be represented as Unicode make the check
+incomplete.
+
+Exit codes are `0` for no violations, `1` for violations, and `2` for an invalid
+invocation or incomplete check. Code `2` takes precedence when both apply.
+
+Windows naming rules are based on
+[Microsoft's file naming documentation](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file).
 [Detox](https://github.com/dharple/detox) is a reference for filename cleanup.
