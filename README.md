@@ -111,3 +111,15 @@ needs its own checks.
 
 The Windows identity query uses [windows-sys](https://docs.rs/windows-sys/)
 for Microsoft's [FileIdInfo API](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info).
+
+## Windows preview
+
+The Windows x64 GitHub Actions run packages the executable with
+[German quick-start instructions](START-HERE.md).
+
+On Windows, `fntidy apply plan.json` can apply one proposed file rename.
+It validates the saved plan again, records the step before renaming,
+and keeps the completed journal under `%LOCALAPPDATA%\fntidy\runs`.
+An exit code of `3` means the journal needs review. Keep the journal and
+inspect the source and target paths. Automatic recovery and undo are
+future milestones.

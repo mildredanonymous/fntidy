@@ -232,8 +232,11 @@ pub fn run(root: &Path, output: Option<&Path>) -> ExitCode {
 
 pub fn verify(path: &Path) -> ExitCode {
     match verify_report(path) {
-        Ok(count) => {
-            println!("Verified {count} proposed rename(s). No entries were renamed.");
+        Ok(report) => {
+            println!(
+                "Verified {} proposed rename(s). No entries were renamed.",
+                report.proposals.len()
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -243,7 +246,7 @@ pub fn verify(path: &Path) -> ExitCode {
     }
 }
 
-fn verify_report(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
     let report: Report = serde_json::from_reader(BufReader::new(File::open(path)?))?;
     if report.schema_version != SCHEMA_VERSION
         || report.profile != windows_names::PROFILE
@@ -273,6 +276,7 @@ fn verify_report(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
     }
     let expected = report
         .identities
+        .as_ref()
         .ok_or("The saved plan lacks file identities. Create a fresh plan.")?;
     let actual = capture_identities(root, &current.proposals)?;
     if expected.root != actual.root {
@@ -295,7 +299,7 @@ fn verify_report(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
             .into());
         }
     }
-    Ok(report.proposals.len())
+    Ok(report)
 }
 
 fn capture_identities(root: &Path, proposals: &[Proposal]) -> io::Result<PlanIdentities> {
@@ -363,4 +367,85 @@ fn export(root: &Path, output: &Path, preview: Preview) -> io::Result<()> {
     file.as_file().sync_all()?;
     file.persist_noclobber(output)?;
     Ok(())
+}
+
+#[cfg(windows)]
+pub fn apply(path: &Path) -> ExitCode {
+    let report = match verify_report(path) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("Cannot apply plan {}: {error}", display(path.as_os_str()));
+            return ExitCode::from(2);
+        }
+    };
+
+    let [proposal] = report.proposals.as_slice() else {
+        if report.proposals.is_empty() {
+            println!("The plan contains no renames.");
+            return ExitCode::SUCCESS;
+        }
+        eprintln!("This preview applies only plans with one proposed file rename.");
+        return ExitCode::from(2);
+    };
+    let Some(PlanIdentities {
+        root: root_id,
+        sources,
+    }) = report.identities
+    else {
+        return ExitCode::from(2);
+    };
+    let [source_id] = sources.as_slice() else {
+        return ExitCode::from(2);
+    };
+    let root = Path::new(&report.root);
+    let mut journal = match start_journal(&report.root, root_id.clone()) {
+        Ok(journal) => journal,
+        Err(error) => {
+            eprintln!("Cannot create the recovery journal: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(error) = journal.begin(&proposal.source, &proposal.target, source_id.clone()) {
+        eprintln!("Cannot record the rename: {error}");
+        return ExitCode::from(2);
+    }
+
+    let result = crate::windows_rename::rename(
+        root,
+        &root_id,
+        &proposal.source,
+        source_id,
+        &proposal.target,
+    )
+    .and_then(|()| journal.confirm())
+    .and_then(|()| journal.finish());
+    if let Err(error) = result {
+        eprintln!(
+            "The run needs review. Keep the journal and check the source and target: {error}"
+        );
+        return ExitCode::from(3);
+    }
+
+    println!(
+        "Renamed {} to {}.",
+        display(OsStr::new(&proposal.source)),
+        display(OsStr::new(&proposal.target)),
+    );
+    ExitCode::SUCCESS
+}
+
+#[cfg(windows)]
+fn start_journal(root: &str, root_id: Identity) -> io::Result<crate::journal::Journal> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| io::Error::other("LOCALAPPDATA must be an absolute path"))?;
+    let logs = local.join("fntidy").join("runs");
+    std::fs::create_dir_all(&logs)?;
+    let directory = tempfile::Builder::new().prefix("run-").tempdir_in(logs)?;
+    let path = directory.path().join("run.jsonl");
+    let journal = crate::journal::Journal::create(&path, root, root_id)?;
+    let _ = directory.keep();
+    eprintln!("Recovery journal: {}", display(path.as_os_str()));
+    Ok(journal)
 }

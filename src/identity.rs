@@ -2,7 +2,7 @@ use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "platform", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Identity {
     Windows {

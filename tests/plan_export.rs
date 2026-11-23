@@ -212,3 +212,51 @@ fn checks_exact_windows_names_and_rejects_replacements_and_occupied_targets() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("was replaced"));
     assert!(!target.exists());
 }
+
+#[cfg(windows)]
+#[test]
+fn applies_one_verified_rename_and_keeps_its_recovery_journal() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("source");
+    let local = workspace.path().join("local");
+    fs::create_dir(&root).unwrap();
+    let base = root.canonicalize().unwrap();
+    let source = base.join("Bericht.txt.");
+    let target = base.join("Bericht.txt");
+    let plan = workspace.path().join("plan.json");
+    fs::write(&source, b"test content").unwrap();
+    assert_eq!(export(&root, &plan).status.code(), Some(0));
+
+    let apply = || {
+        Command::new(env!("CARGO_BIN_EXE_fntidy"))
+            .arg("apply")
+            .arg(&plan)
+            .env("LOCALAPPDATA", &local)
+            .output()
+            .unwrap()
+    };
+    fs::write(&target, b"occupied").unwrap();
+    assert_eq!(apply().status.code(), Some(2));
+    assert_eq!(fs::read(&source).unwrap(), b"test content");
+    assert_eq!(fs::read(&target).unwrap(), b"occupied");
+    assert!(!local.exists());
+    fs::remove_file(&target).unwrap();
+
+    let result = apply();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(fs::read(&target).unwrap(), b"test content");
+    assert!(!source.exists());
+    let runs = local.join("fntidy").join("runs");
+    let run = fs::read_dir(runs).unwrap().next().unwrap().unwrap();
+    let log = fs::read_to_string(run.path().join("run.jsonl")).unwrap();
+    let events: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events[1]["source"], "Bericht.txt.");
+    assert_eq!(events[1]["target"], "Bericht.txt");
+    assert_eq!(events[2]["event"], "renamed");
+    assert_eq!(events[3]["event"], "finished");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("run.jsonl"));
+    assert_eq!(apply().status.code(), Some(2));
+}

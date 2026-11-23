@@ -51,6 +51,9 @@ pub fn rename(
     }
 
     let entry = identity::open(&base.join(source), DELETE | FILE_READ_ATTRIBUTES, 0)?;
+    if !entry.metadata()?.is_file() {
+        return Err(io::Error::other("this preview only renames files"));
+    }
     if identity::from_handle(&entry)? != *expected_source {
         return Err(io::Error::other("the source was replaced"));
     }

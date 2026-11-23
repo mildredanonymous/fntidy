@@ -2,7 +2,7 @@
 
 use std::{
     fs::{File, OpenOptions},
-    io::{self, BufRead, BufReader, Write},
+    io::{self, Write},
     path::Path,
 };
 
@@ -106,6 +106,10 @@ impl Journal {
     }
 }
 
+#[cfg(test)]
+use std::io::{BufRead, BufReader};
+
+#[cfg(test)]
 #[derive(Debug, PartialEq)]
 struct Step {
     source: String,
@@ -113,6 +117,7 @@ struct Step {
     source_identity: Identity,
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 struct Run {
     root: String,
@@ -122,6 +127,7 @@ struct Run {
     finished: bool,
 }
 
+#[cfg(test)]
 fn inspect(path: &Path) -> io::Result<Run> {
     let mut reader = BufReader::new(File::open(path)?);
     let mut line = Vec::new();
@@ -167,6 +173,7 @@ fn inspect(path: &Path) -> io::Result<Run> {
     Ok(run)
 }
 
+#[cfg(test)]
 fn next_record(reader: &mut impl BufRead, line: &mut Vec<u8>) -> io::Result<Option<Record>> {
     line.clear();
     reader.read_until(b'\n', line)?;

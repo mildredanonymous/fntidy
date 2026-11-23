@@ -1,15 +1,20 @@
-#[cfg(all(windows, test))]
+#[cfg(windows)]
 mod windows_rename;
 
 mod check;
 mod directory;
 mod identity;
-#[cfg(test)]
+#[cfg(any(windows, test))]
 mod journal;
 mod plan;
 mod windows_names;
 
 use std::{env, path::Path, process::ExitCode};
+
+#[cfg(windows)]
+const APPLY_HELP: &str = "\n       fntidy apply <file>";
+#[cfg(not(windows))]
+const APPLY_HELP: &str = "";
 
 const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory>\n       fntidy plan <directory> [--out <file>]\n       fntidy verify-plan <file>";
 
@@ -17,8 +22,10 @@ fn main() -> ExitCode {
     let mut arguments = env::args_os().skip(1);
 
     match (arguments.next().as_deref(), arguments.next()) {
-        (None, None) => println!("{HELP}"),
-        (Some(option), None) if option == "--help" || option == "-h" => println!("{HELP}"),
+        (None, None) => println!("{HELP}{APPLY_HELP}"),
+        (Some(option), None) if option == "--help" || option == "-h" => {
+            println!("{HELP}{APPLY_HELP}")
+        }
         (Some(option), None) if option == "--version" || option == "-V" => {
             println!("fntidy {}", env!("CARGO_PKG_VERSION"));
         }
@@ -37,6 +44,10 @@ fn main() -> ExitCode {
         }
         (Some(command), Some(path)) if command == "verify-plan" && arguments.next().is_none() => {
             return plan::verify(Path::new(&path));
+        }
+        #[cfg(windows)]
+        (Some(command), Some(path)) if command == "apply" && arguments.next().is_none() => {
+            return plan::apply(Path::new(&path));
         }
         _ => return invalid_arguments(),
     }
