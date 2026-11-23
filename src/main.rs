@@ -5,7 +5,7 @@ mod windows_names;
 
 use std::{env, path::Path, process::ExitCode};
 
-const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory>\n       fntidy plan <directory> [--out <file>]";
+const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory>\n       fntidy plan <directory> [--out <file>]\n       fntidy verify-plan <file>";
 
 fn main() -> ExitCode {
     let mut arguments = env::args_os().skip(1);
@@ -28,6 +28,9 @@ fn main() -> ExitCode {
                 _ => return invalid_arguments(),
             };
             return plan::run(Path::new(&directory), output.as_deref().map(Path::new));
+        }
+        (Some(command), Some(path)) if command == "verify-plan" && arguments.next().is_none() => {
+            return plan::verify(Path::new(&path));
         }
         _ => return invalid_arguments(),
     }

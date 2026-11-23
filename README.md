@@ -84,3 +84,20 @@ The exporter uses [Serde](https://serde.rs/) and
 [serde_json](https://docs.rs/serde_json/) for JSON mapping and escaping,
 and [tempfile](https://docs.rs/tempfile/) to publish the completed file
 without overwriting an existing output.
+
+## Verify a saved preview
+
+```powershell
+cargo run --locked -- verify-plan plan.json
+```
+
+The command reads the saved plan and scans its directory again. It returns
+exit code `0` if the saved proposals match the current ready preview, or `2`
+if the plan cannot be verified. This includes unsupported versions, blocked
+or incomplete scans, changed proposals, and newly occupied targets. Proposals
+are compared as data. Saved source and target strings are never used as
+filesystem paths during verification.
+
+Verification checks the naming preview at the time of the scan. File identity,
+changes to content at the same name, and filesystem changes after the scan
+are outside its scope. The command performs no renames.

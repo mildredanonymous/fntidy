@@ -72,3 +72,65 @@ fn exports_blocked_proposals_with_exact_names_and_rule_ids() {
     assert_eq!(fs::read(root.join("März?.txt")).unwrap(), b"original");
     assert_eq!(fs::read(root.join("März_.txt")).unwrap(), b"occupied");
 }
+
+fn verify(path: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_fntidy"))
+        .arg("verify-plan")
+        .arg(path)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn verifies_an_unchanged_export_and_rejects_an_unknown_version() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("source");
+    fs::create_dir(&root).unwrap();
+    let path = workspace.path().join("plan.json");
+
+    assert_eq!(export(&root, &path).status.code(), Some(0));
+    assert_eq!(verify(&path).status.code(), Some(0));
+
+    let mut report: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    report["schema_version"] = 999.into();
+    fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+    let result = verify(&path);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Unsupported plan format"));
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_changed_proposals_and_newly_occupied_targets_without_renaming() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("source");
+    fs::create_dir(&root).unwrap();
+    let source = root.join("März?.txt");
+    let target = root.join("März_.txt");
+    fs::write(&source, "original").unwrap();
+    let path = workspace.path().join("plan.json");
+    assert_eq!(export(&root, &path).status.code(), Some(0));
+    assert_eq!(verify(&path).status.code(), Some(0));
+    assert!(!target.exists());
+
+    let original_plan = fs::read(&path).unwrap();
+    let mut report: Value = serde_json::from_slice(&original_plan).unwrap();
+    report["proposals"][0]["target"] = "../outside.txt".into();
+    fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+    assert_eq!(verify(&path).status.code(), Some(2));
+    assert!(!workspace.path().join("outside.txt").exists());
+
+    fs::write(&path, original_plan).unwrap();
+    fs::write(&target, "occupied").unwrap();
+    let result = verify(&path);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("naming conflict"));
+    assert_eq!(fs::read_to_string(&source).unwrap(), "original");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "occupied");
+
+    fs::remove_file(&source).unwrap();
+    let result = verify(&path);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("differ"));
+}
