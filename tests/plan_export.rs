@@ -165,6 +165,7 @@ fn recursive_scan_uses_relative_paths_and_checks_collisions_per_directory() {
     fs::create_dir_all(&second).unwrap();
     let source = "Foto 😀.txt";
     fs::write(good.join(source), "first").unwrap();
+    fs::write(good.join("Herz ❤️.txt"), "another").unwrap();
     fs::write(second.join(source), "second").unwrap();
     let relative_source = Path::new("A").join("deep").join(source);
     let relative_target = relative_source.with_file_name("Foto.txt");
@@ -197,7 +198,12 @@ fn recursive_scan_uses_relative_paths_and_checks_collisions_per_directory() {
     let report: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
     assert_eq!(report["schema_version"], 3);
     assert_eq!(report["recursive"], true);
-    assert_eq!(report["proposals"].as_array().unwrap().len(), 2);
+    assert_eq!(report["proposals"].as_array().unwrap().len(), 3);
+    let terminal = String::from_utf8(result.stdout).unwrap();
+    let heading = format!("Folder: {}", Path::new("A").join("deep").display());
+    assert_eq!(terminal.matches(&heading).count(), 1);
+    assert!(terminal.contains("  Original: \"Foto 😀.txt\"\n  Proposed: \"Foto.txt\""));
+    assert!(terminal.contains("  Original: \"Herz ❤️.txt\"\n  Proposed: \"Herz.txt\""));
     assert_eq!(
         report["proposals"][0]["source"],
         relative_source.to_str().unwrap()
@@ -212,7 +218,13 @@ fn recursive_scan_uses_relative_paths_and_checks_collisions_per_directory() {
     fs::write(good.join("Foto.txt"), "occupied").unwrap();
     assert_eq!(verify(&plan).status.code(), Some(2));
     fs::remove_file(&plan).unwrap();
-    assert_eq!(preview().status.code(), Some(1));
+    let blocked = preview();
+    assert_eq!(blocked.status.code(), Some(1));
+    assert!(
+        String::from_utf8(blocked.stdout)
+            .unwrap()
+            .contains("Blocked:  Proposed names collide.")
+    );
     let report: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
     let collision = report["collisions"][0].as_array().unwrap();
     assert!(collision.contains(&serde_json::json!(relative_source.to_str().unwrap())));

@@ -119,7 +119,10 @@ fntidy check "D:\Export" --recursive --profile tidy
 fntidy plan "D:\Export" --recursive --profile tidy --out "D:\tidy-plan.json"
 ```
 
-Results identify entries by paths relative to the selected directory.
+The preview groups changes by folder and shows the original name directly
+above its proposed replacement. Folder paths are relative to the selected
+directory. The display marks repeated and edge spaces with `␠` and escapes
+invisible control characters.
 Collisions are checked among siblings. The scan skips symbolic links and
 other reparse points. A directory that cannot be read makes the scan incomplete.
 When a directory and one of its entries both need changes, the entry's target

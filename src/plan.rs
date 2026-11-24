@@ -9,6 +9,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     directory::{self, display},
@@ -90,12 +91,12 @@ enum ProposalStatus {
 }
 
 impl ProposalStatus {
-    fn description(self) -> &'static str {
+    fn block_reason(self) -> Option<&'static str> {
         match self {
-            Self::Proposed => "proposed",
-            Self::InvalidTarget => "blocked: target needs manual review",
-            Self::ProposedCollision => "blocked: proposed names collide",
-            Self::ExistingSibling => "blocked: target matches an existing sibling",
+            Self::Proposed => None,
+            Self::InvalidTarget => Some("Target needs manual review."),
+            Self::ProposedCollision => Some("Proposed names collide."),
+            Self::ExistingSibling => Some("Target matches an existing sibling."),
         }
     }
 }
@@ -221,27 +222,7 @@ pub fn run(root: &Path, output: Option<&Path>, profile: Profile, recursive: bool
     };
     let proposal_count = proposals.len();
 
-    for collision in &collisions {
-        let names = collision
-            .iter()
-            .map(|name| display(OsStr::new(name)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!(
-            "[{}] WIN_NAME_COLLISION: These entries would share a Windows name: {names}",
-            profile.name()
-        );
-    }
-    for proposal in &proposals {
-        println!(
-            "[{}] {} -> {} ({}; {})",
-            profile.name(),
-            display(OsStr::new(&proposal.source)),
-            display(OsStr::new(&proposal.target)),
-            proposal.status.description(),
-            proposal.rules.join(", "),
-        );
-    }
+    print_preview(profile, &proposals, &collisions);
 
     if let Some(output) = output {
         if let Err(error) = export(
@@ -277,6 +258,91 @@ pub fn run(root: &Path, output: Option<&Path>, profile: Profile, recursive: bool
             );
             ExitCode::SUCCESS
         }
+    }
+}
+
+fn print_preview(profile: Profile, proposals: &[Proposal], collisions: &[Vec<String>]) {
+    if proposals.is_empty() && collisions.is_empty() {
+        return;
+    }
+    println!("Rename preview (profile: {})", profile.name());
+
+    for collision in collisions {
+        let names = collision
+            .iter()
+            .map(|name| format!("\"{}\"", preview_path(name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("\nCollision: These entries would share a Windows name: {names}");
+    }
+
+    let mut previous_parent = None;
+    for proposal in proposals {
+        let (parent, source) = proposal
+            .source
+            .rsplit_once(MAIN_SEPARATOR)
+            .unwrap_or((".", &proposal.source));
+        let target = proposal
+            .target
+            .rsplit(MAIN_SEPARATOR)
+            .next()
+            .expect("a target name");
+        if previous_parent != Some(parent) {
+            println!("\nFolder: {}", preview_path(parent));
+            previous_parent = Some(parent);
+        }
+        println!("\n  Original: \"{}\"", preview_name(source));
+        println!("  Proposed: \"{}\"", preview_name(target));
+        if let Some(reason) = proposal.status.block_reason() {
+            println!("  Blocked:  {reason}");
+        }
+    }
+    println!();
+}
+
+fn preview_path(path: &str) -> String {
+    path.split(MAIN_SEPARATOR)
+        .map(preview_name)
+        .collect::<Vec<_>>()
+        .join(std::path::MAIN_SEPARATOR_STR)
+}
+
+fn preview_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    let bytes = name.as_bytes();
+    for (index, grapheme) in name.grapheme_indices(true) {
+        if grapheme == " "
+            && (index == 0
+                || bytes[index - 1] == b' '
+                || matches!(bytes.get(index + 1), None | Some(b' ')))
+        {
+            result.push('␠');
+        } else if grapheme == "␠" {
+            result.push_str("\\u{2420}");
+        } else if emojis::get(grapheme).is_some() || grapheme == "'" {
+            result.push_str(grapheme);
+        } else {
+            result.extend(grapheme.escape_debug());
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::preview_name;
+
+    #[test]
+    fn preview_displays_emoji_and_exposes_invisible_characters() {
+        assert_eq!(preview_name("Familie 👨‍👩‍👧‍👦.txt"), "Familie 👨‍👩‍👧‍👦.txt");
+        assert_eq!(preview_name("Herz ❤️.txt"), "Herz ❤️.txt");
+        assert_eq!(preview_name("Café.txt"), "Café.txt");
+        assert_eq!(preview_name("Cafe\u{301}.txt"), r"Cafe\u{301}.txt");
+        assert_eq!(preview_name(" zwei  Namen.txt "), "␠zwei␠␠Namen.txt␠");
+        assert_eq!(
+            preview_name("␠\u{202f}\u{202e}\u{1b}\n"),
+            r"\u{2420}\u{202f}\u{202e}\u{1b}\n"
+        );
     }
 }
 
