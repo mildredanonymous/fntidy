@@ -1,6 +1,8 @@
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     ffi::OsStr,
+    fmt,
     fs::File,
     io::BufReader,
     io::{self, Write},
@@ -61,7 +63,61 @@ struct PlanIdentities {
 struct Preview {
     status: Status,
     proposals: Vec<Proposal>,
+    kinds: Vec<EntryKind>,
     collisions: Vec<Vec<String>>,
+    blocked: EntryCounts,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntryKind {
+    File,
+    Folder,
+}
+
+impl EntryKind {
+    fn of(entry: &directory::Entry) -> Self {
+        if entry.is_dir {
+            Self::Folder
+        } else {
+            Self::File
+        }
+    }
+}
+
+#[derive(Default)]
+struct EntryCounts {
+    files: usize,
+    folders: usize,
+}
+
+impl EntryCounts {
+    fn count(&mut self, kind: EntryKind) {
+        match kind {
+            EntryKind::File => self.files += 1,
+            EntryKind::Folder => self.folders += 1,
+        }
+    }
+
+    fn of(kinds: &[EntryKind]) -> Self {
+        let mut counts = Self::default();
+        for &kind in kinds {
+            counts.count(kind);
+        }
+        counts
+    }
+}
+
+impl fmt::Display for EntryCounts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} file{}, {} folder{}",
+            self.files,
+            if self.files == 1 { "" } else { "s" },
+            self.folders,
+            if self.folders == 1 { "" } else { "s" }
+        )
+    }
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
@@ -113,7 +169,9 @@ fn preview(root: &Path, profile: Profile, recursive: bool) -> Option<Preview> {
     let mut preview = Preview {
         status: Status::Ready,
         proposals: Vec::new(),
+        kinds: Vec::new(),
         collisions: Vec::new(),
+        blocked: EntryCounts::default(),
     };
     let incomplete = directory::walk(root, recursive, |parent, directory| {
         let local = preview_directory(parent, directory, profile);
@@ -121,7 +179,10 @@ fn preview(root: &Path, profile: Profile, recursive: bool) -> Option<Preview> {
             preview.status = Status::Blocked;
         }
         preview.proposals.extend(local.proposals);
+        preview.kinds.extend(local.kinds);
         preview.collisions.extend(local.collisions);
+        preview.blocked.files += local.blocked.files;
+        preview.blocked.folders += local.blocked.folders;
     })?;
     if incomplete {
         preview.status = Status::Incomplete;
@@ -150,17 +211,20 @@ fn preview_directory(parent: &Path, directory: directory::Directory, profile: Pr
     });
 
     let mut proposals = Vec::new();
+    let mut kinds = Vec::new();
     let mut collisions: Vec<Vec<String>> = Vec::new();
-    let mut blocked = false;
+    let mut blocked = EntryCounts::default();
     for group in final_names
         .chunk_by(|left, right| windows_names::compare(&left.0, &right.0) == Ordering::Equal)
     {
         if group.len() > 1 {
-            blocked = true;
             collisions.push(
                 group
                     .iter()
-                    .map(|(_, entry, _)| relative_name(parent, &entry.name))
+                    .map(|(_, entry, _)| {
+                        blocked.count(EntryKind::of(entry));
+                        relative_name(parent, &entry.name)
+                    })
                     .collect(),
             );
         }
@@ -184,7 +248,10 @@ fn preview_directory(parent: &Path, directory: directory::Directory, profile: Pr
             } else {
                 ProposalStatus::Proposed
             };
-            blocked |= invalid || occupied_by_sibling;
+            let kind = EntryKind::of(entry);
+            if group.len() == 1 && status != ProposalStatus::Proposed {
+                blocked.count(kind);
+            }
             let rules = profile
                 .violations(&entry.name)
                 .map(|(id, _)| id.to_owned())
@@ -195,10 +262,11 @@ fn preview_directory(parent: &Path, directory: directory::Directory, profile: Pr
                 rules,
                 status,
             });
+            kinds.push(kind);
         }
     }
 
-    let status = if blocked {
+    let status = if blocked.files + blocked.folders > 0 {
         Status::Blocked
     } else {
         Status::Ready
@@ -207,35 +275,21 @@ fn preview_directory(parent: &Path, directory: directory::Directory, profile: Pr
     Preview {
         status,
         proposals,
+        kinds,
         collisions,
+        blocked,
     }
 }
 
 pub fn run(root: &Path, output: Option<&Path>, profile: Profile, recursive: bool) -> ExitCode {
-    let Some(Preview {
-        status,
-        proposals,
-        collisions,
-    }) = preview(root, profile, recursive)
-    else {
+    let Some(preview) = preview(root, profile, recursive) else {
         return ExitCode::from(2);
     };
-    let proposal_count = proposals.len();
-
-    print_preview(profile, &proposals, &collisions);
+    print_preview(profile, &preview);
+    let status = preview.status;
 
     if let Some(output) = output {
-        if let Err(error) = export(
-            root,
-            output,
-            profile,
-            recursive,
-            Preview {
-                status,
-                proposals,
-                collisions,
-            },
-        ) {
+        if let Err(error) = export(root, output, profile, recursive, preview) {
             eprintln!("Cannot write plan {}: {error}", display(output.as_os_str()));
             return ExitCode::from(2);
         }
@@ -252,22 +306,27 @@ pub fn run(root: &Path, output: Option<&Path>, profile: Profile, recursive: bool
             ExitCode::from(1)
         }
         Status::Ready => {
-            println!(
-                "{} proposed rename(s). No entries were renamed.",
-                proposal_count
-            );
+            println!("No entries were renamed.");
             ExitCode::SUCCESS
         }
     }
 }
 
-fn print_preview(profile: Profile, proposals: &[Proposal], collisions: &[Vec<String>]) {
-    if proposals.is_empty() && collisions.is_empty() {
-        return;
+fn print_preview(profile: Profile, preview: &Preview) {
+    if !preview.proposals.is_empty() || !preview.collisions.is_empty() {
+        println!("Rename preview (profile: {})", profile.name());
+        print_proposals(preview);
     }
-    println!("Rename preview (profile: {})", profile.name());
+    println!(
+        "{} proposed rename(s): {}.",
+        preview.proposals.len(),
+        EntryCounts::of(&preview.kinds)
+    );
+    println!("Blocked entries: {}.", preview.blocked);
+}
 
-    for collision in collisions {
+fn print_proposals(preview: &Preview) {
+    for collision in &preview.collisions {
         let names = collision
             .iter()
             .map(|name| format!("\"{}\"", preview_path(name)))
@@ -276,28 +335,66 @@ fn print_preview(profile: Profile, proposals: &[Proposal], collisions: &[Vec<Str
         println!("\nCollision: These entries would share a Windows name: {names}");
     }
 
+    let folder_targets: HashMap<_, _> = preview
+        .proposals
+        .iter()
+        .zip(&preview.kinds)
+        .filter(|(_, kind)| **kind == EntryKind::Folder && preview.status == Status::Ready)
+        .map(|(proposal, _)| (proposal.source.as_str(), leaf_name(&proposal.target)))
+        .collect();
     let mut previous_parent = None;
-    for proposal in proposals {
+    for proposal in &preview.proposals {
         let (parent, source) = proposal
             .source
             .rsplit_once(MAIN_SEPARATOR)
             .unwrap_or((".", &proposal.source));
-        let target = proposal
-            .target
-            .rsplit(MAIN_SEPARATOR)
-            .next()
-            .expect("a target name");
+        let target = leaf_name(&proposal.target);
         if previous_parent != Some(parent) {
             println!("\nFolder: {}", preview_path(parent));
             previous_parent = Some(parent);
         }
         println!("\n  Original: \"{}\"", preview_name(source));
         println!("  Proposed: \"{}\"", preview_name(target));
+        if let Some(path) = final_path(&proposal.target, &folder_targets) {
+            println!("  Final path: \"{}\"", preview_path(&path));
+        }
         if let Some(reason) = proposal.status.block_reason() {
             println!("  Blocked:  {reason}");
         }
     }
     println!();
+}
+
+fn leaf_name(path: &str) -> &str {
+    path.rsplit_once(MAIN_SEPARATOR)
+        .map_or(path, |(_, name)| name)
+}
+
+fn final_path(target: &str, folder_targets: &HashMap<&str, &str>) -> Option<String> {
+    if folder_targets.is_empty() {
+        return None;
+    }
+    let (parent, name) = target.rsplit_once(MAIN_SEPARATOR)?;
+    let mut final_path = String::with_capacity(target.len());
+    let mut start = 0;
+    let mut changed = false;
+    for end in parent
+        .match_indices(MAIN_SEPARATOR)
+        .map(|(index, _)| index)
+        .chain(std::iter::once(parent.len()))
+    {
+        let component = &parent[start..end];
+        let final_component = folder_targets
+            .get(&parent[..end])
+            .copied()
+            .unwrap_or(component);
+        changed |= component != final_component;
+        final_path.push_str(final_component);
+        final_path.push(MAIN_SEPARATOR);
+        start = end + MAIN_SEPARATOR.len_utf8();
+    }
+    final_path.push_str(name);
+    changed.then_some(final_path)
 }
 
 fn preview_path(path: &str) -> String {
@@ -348,10 +445,11 @@ mod display_tests {
 
 pub fn verify(path: &Path) -> ExitCode {
     match verify_report(path) {
-        Ok(report) => {
+        Ok((report, kinds)) => {
             println!(
-                "Verified {} proposed rename(s). No entries were renamed.",
-                report.proposals.len()
+                "Verified {} proposed rename(s): {}. No entries were renamed.",
+                report.proposals.len(),
+                EntryCounts::of(&kinds),
             );
             ExitCode::SUCCESS
         }
@@ -362,7 +460,7 @@ pub fn verify(path: &Path) -> ExitCode {
     }
 }
 
-fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
+fn verify_report(path: &Path) -> Result<(Report, Vec<EntryKind>), Box<dyn std::error::Error>> {
     let report: Report = serde_json::from_reader(BufReader::new(File::open(path)?))?;
     let unsupported = "Unsupported plan format or rules. Create a fresh plan.";
     let profile = Profile::parse(OsStr::new(&report.profile)).ok_or(unsupported)?;
@@ -383,7 +481,7 @@ fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
         preview(root, profile, report.recursive).ok_or("Cannot scan the saved directory.")?;
     match current.status {
         Status::Incomplete => return Err("The current scan is incomplete. Create a fresh plan after resolving the scan errors.".into()),
-        Status::Blocked => return Err("The current directory has a naming conflict or an invalid target. Run plan again to see the details.".into()),
+        Status::Blocked => return Err(format!("The current directory has a naming conflict or an invalid target. Blocked entries: {}. Run plan again to see the details.", current.blocked).into()),
         Status::Ready => {}
     }
     if report.proposals != current.proposals {
@@ -419,7 +517,7 @@ fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
             .into());
         }
     }
-    Ok(report)
+    Ok((report, current.kinds))
 }
 
 fn capture_identities(
@@ -517,16 +615,17 @@ fn export(
 
 #[cfg(windows)]
 pub fn apply(path: &Path) -> ExitCode {
-    let report = match verify_report(path) {
-        Ok(report) => report,
+    let (report, kinds) = match verify_report(path) {
+        Ok(verified) => verified,
         Err(error) => {
             eprintln!("Cannot apply plan {}: {error}", display(path.as_os_str()));
+            eprintln!("Changed: 0 files, 0 folders.");
             return ExitCode::from(2);
         }
     };
 
     if report.proposals.is_empty() {
-        println!("The plan contains no renames.");
+        println!("The plan contains no renames. Changed: 0 files, 0 folders.");
         return ExitCode::SUCCESS;
     }
     let Some(identities) = &report.identities else {
@@ -537,11 +636,13 @@ pub fn apply(path: &Path) -> ExitCode {
         Ok(journal) => journal,
         Err(error) => {
             eprintln!("Cannot create the recovery journal: {error}");
+            eprintln!("Changed: 0 files, 0 folders.");
             return ExitCode::from(2);
         }
     };
     if let Err(error) = execute_batch(
         &report.proposals,
+        &kinds,
         identities,
         &mut journal,
         |proposal, parent_id, source_id| {
@@ -559,13 +660,18 @@ pub fn apply(path: &Path) -> ExitCode {
         return ExitCode::from(3);
     }
 
-    println!("{} rename(s) completed.", report.proposals.len());
+    println!(
+        "{} rename(s) completed. Changed: {}.",
+        report.proposals.len(),
+        EntryCounts::of(&kinds)
+    );
     ExitCode::SUCCESS
 }
 
 #[cfg(windows)]
 fn execute_batch(
     proposals: &[Proposal],
+    kinds: &[EntryKind],
     identities: &PlanIdentities,
     journal: &mut crate::journal::Journal,
     mut rename: impl FnMut(&Proposal, &Identity, &Identity) -> io::Result<()>,
@@ -575,6 +681,7 @@ fn execute_batch(
     order.sort_by_cached_key(|&index| {
         std::cmp::Reverse(proposals[index].source.split(MAIN_SEPARATOR).count())
     });
+    let mut changed = EntryCounts::default();
     for (completed, index) in order.into_iter().enumerate() {
         let proposal = &proposals[index];
         let source_id = &identities.sources[index];
@@ -587,9 +694,10 @@ fn execute_batch(
             .and_then(|()| rename(proposal, parent_id, source_id))
             .and_then(|()| journal.confirm())
             .map_err(|error| io::Error::other(format!(
-                "Stopped after {completed} of {} confirmed rename(s). Could not complete \"{}\" -> \"{}\": {error}.",
+                "Stopped after {completed} of {} confirmed rename(s). Changed (confirmed): {changed}. Could not complete \"{}\" -> \"{}\": {error}.",
                 proposals.len(), preview_path(&proposal.source), preview_path(&proposal.target),
             )))?;
+        changed.count(kinds[index]);
         println!(
             "Renamed \"{}\" to \"{}\".",
             preview_path(&proposal.source),
@@ -598,7 +706,7 @@ fn execute_batch(
     }
     journal.finish().map_err(|error| {
         io::Error::other(format!(
-            "All {} rename(s) were confirmed, but the journal could not be finalized: {error}.",
+            "All {} rename(s) were confirmed. Changed: {changed}. Could not finalize the journal: {error}.",
             proposals.len(),
         ))
     })
@@ -627,13 +735,14 @@ mod batch_tests {
             preview(&root, profile, true).unwrap(),
         )
         .unwrap();
-        let report = verify_report(&plan_path).unwrap();
+        let (report, kinds) = verify_report(&plan_path).unwrap();
         let identities = report.identities.unwrap();
         let log = workspace.path().join("run.jsonl");
         let mut journal =
             crate::journal::Journal::create(&log, &report.root, identities.root.clone()).unwrap();
         let result = execute_batch(
             &report.proposals,
+            &kinds,
             &identities,
             &mut journal,
             |proposal, parent_id, source_id| {
@@ -650,12 +759,9 @@ mod batch_tests {
                 )
             },
         );
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Stopped after 1 of 3 confirmed")
-        );
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("Stopped after 1 of 3 confirmed"));
+        assert!(message.contains("Changed (confirmed): 1 file, 0 folders."));
         drop(journal);
 
         assert_eq!(fs::read_to_string(root.join("A.txt")).unwrap(), "A 😀.txt");
@@ -698,6 +804,9 @@ fn start_journal(root: &str, root_id: Identity) -> io::Result<crate::journal::Jo
     let path = directory.path().join("run.jsonl");
     let journal = crate::journal::Journal::create(&path, root, root_id)?;
     let _ = directory.keep();
-    eprintln!("Recovery journal: {}", display(path.as_os_str()));
+    match path.to_str() {
+        Some(path) if !path.chars().any(char::is_control) => eprintln!("Recovery journal: {path}"),
+        _ => eprintln!("Recovery journal: {}", display(path.as_os_str())),
+    }
     Ok(journal)
 }

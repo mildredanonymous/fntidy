@@ -125,8 +125,10 @@ directory. The display marks repeated and edge spaces with `␠` and escapes
 invisible control characters.
 Collisions are checked among siblings. The scan skips symbolic links and
 other reparse points. A directory that cannot be read makes the scan incomplete.
-When a directory and one of its entries both need changes, the entry's target
-is shown inside its current parent directory.
+For a ready plan, an entry whose proposed path changes through a parent
+rename also shows its final path. The preview counts proposed file and
+folder renames and entries involved in a conflict. An existing entry
+that occupies a target can contribute to the blocked count.
 
 Recursive exports use schema version 3 and record the scan scope and the
 identity of each proposed source's parent. `verify-plan` repeats the
@@ -169,6 +171,8 @@ in a saved plan. It validates the entire plan before changing any names.
 Deeper entries are renamed before their parent directories. Each step is
 recorded in the journal under `%LOCALAPPDATA%\fntidy\runs` before the
 rename, with a separate confirmation afterwards.
+The result counts changed files and folders. If a run stops, the reported
+counts include the steps confirmed in the journal.
 
 Exit code `2` means the plan was rejected or the journal could not be
 created. Exit code `3` means the run needs review. If a target becomes

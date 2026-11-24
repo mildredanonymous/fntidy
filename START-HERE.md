@@ -1,76 +1,72 @@
 # fntidy · Windows-x64-Vorschau
 
-Entpacke das ZIP und öffne PowerShell im entpackten Ordner. Rust ist zum
-Ausprobieren nicht erforderlich. Diese Vorschau hat englische Terminalausgaben.
+Entpacke das ZIP und öffne PowerShell im entpackten Ordner. Zum Ausprobieren
+genügt die mitgelieferte `fntidy.exe`. Die Terminalausgabe ist auf Englisch.
 
-## Im Beispielordner ausprobieren
+## 1. Testordner erstellen und Vorschau prüfen
 
-```powershell
-.\fntidy.exe --version
-$sample = Join-Path $env:TEMP ("fntidy-test-" + [guid]::NewGuid())
-New-Item -ItemType Directory -Path $sample
-Set-Content -LiteralPath (Join-Path $sample "Beispiel.txt") -Value "Test"
-.\fntidy.exe check $sample
-$plan = "$sample.json"
-.\fntidy.exe plan $sample --out $plan
-.\fntidy.exe verify-plan $plan
-```
-
-Der gültige Name ergibt keine Verstösse und keine vorgeschlagene Umbenennung.
-Zum Prüfen eigener Namen verwende möglichst einen Ordner mit Kopien. Die
-geprüften Dateien bleiben bei diesen Befehlen unverändert.
-
-## Emojis und Leerzeichen bereinigen
+Das Beispiel erstellt einen Ordner mit Emoji und einer Datei darin. Damit
+lässt sich auch die Vorschau nach einer Ordnerumbenennung nachvollziehen.
 
 ```powershell
-.\fntidy.exe check $sample --profile tidy
-.\fntidy.exe plan $sample --profile tidy --out "$sample-tidy.json"
-```
+$ordner = Join-Path $env:TEMP ("fntidy-test-" + [guid]::NewGuid())
+$unterordner = Join-Path $ordner "Fotos 📷"
+New-Item -ItemType Directory -Path $unterordner -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $unterordner "März  🇨🇭.txt") -Value "Testinhalt"
 
-Mit `tidy` wird zum Beispiel aus `März  🇨🇭.tar.gz` der Name
-`März.tar.gz`. Umlaute, gültige Satzzeichen und übliche Dateiendungen
-bleiben erhalten. Bereits belegte Zielnamen blockieren den Plan.
-
-Mit `--recursive` werden auch alle Unterordner geprüft. Der folgende
-Befehl zeigt die vorgeschlagenen Umbenennungen relativ zum Testordner an.
-
-```powershell
-.\fntidy.exe plan $sample --recursive --profile tidy
-```
-
-## Einen Plan auf eine Testkopie anwenden
-
-```powershell
-$ordner = "C:\Pfad\zur\Testkopie"
-$plan = Join-Path $env:TEMP "fntidy-$([guid]::NewGuid()).json"
+$plan = "$ordner.json"
 .\fntidy.exe plan $ordner --recursive --profile tidy --out $plan
+```
+
+Die Vorschau zählt **eine Datei und einen Ordner**. Unter `Final path` steht
+`Fotos\März.txt`, weil sich beide Namen ändern. Die Zusammenfassung nennt
+auch die Anzahl blockierter Dateien und Ordner. Bei einem Konflikt prüfe
+die genannten Pfade und erstelle nach der Korrektur einen neuen Plan mit
+einem freien Dateinamen für die JSON-Datei.
+
+`--recursive` bezieht alle Unterordner ein. `--profile tidy` entfernt
+erkannte Emojis, vereinheitlicht Leerzeichen und wendet die Windows-Regeln
+an. Für reine Windows-Namensreparaturen verwende `--profile windows`.
+Mit `check` kannst du die Namensverstösse ohne Umbenennungsvorschläge anzeigen.
+
+## 2. Den geprüften Plan anwenden
+
+```powershell
 .\fntidy.exe verify-plan $plan
 ```
 
-Prüfe die Vorschläge. Wenn der Plan bereit ist, wendest du ihn so an.
+Wenn die Prüfung erfolgreich ist und die Vorschläge stimmen, führe den Plan aus.
 
 ```powershell
 .\fntidy.exe apply $plan
 ```
 
-Dateien und Ordner werden von innen nach aussen umbenannt. Bei einem
-Hindernis während des Laufs stoppt fntidy. Bereits bestätigte
-Umbenennungen bleiben bestehen. Die Ausgabe nennt den Pfad zum Protokoll
-unter `%LOCALAPPDATA%\fntidy\runs`.
+fntidy benennt zuerst die Datei, dann ihren Ordner um. In der
+Zusammenfassung steht `Changed: 1 file, 1 folder.` Kopiere den vollständigen
+Pfad aus der Zeile `Recovery journal:`. Das Protokoll liegt unter
+`%LOCALAPPDATA%\fntidy\runs`. Eine neue Vorschau für denselben Ordner
+ergibt jetzt null Vorschläge.
 
-## Einen Lauf prüfen oder rückgängig machen
+```powershell
+.\fntidy.exe plan $ordner --recursive --profile tidy
+```
 
-Setze `$protokoll` auf den vollständigen Pfad zur `run.jsonl`, den
-`apply` ausgegeben hat.
+## 3. Lauf prüfen und ursprüngliche Namen wiederherstellen
+
+Setze `$protokoll` auf den kopierten Pfad zur `run.jsonl`.
 
 ```powershell
 $protokoll = "C:\Pfad\zum\run.jsonl"
 .\fntidy.exe recover $protokoll
 .\fntidy.exe undo $protokoll
+Get-Content -LiteralPath (Join-Path $unterordner "März  🇨🇭.txt")
 ```
 
-`recover` zeigt den Stand rein lesend an. `undo` stellt die ursprünglichen
-Namen in umgekehrter Reihenfolge wieder her. Falls ein ursprünglicher Name
-belegt ist oder ein Eintrag inzwischen verschoben oder ersetzt wurde, stoppt
-fntidy und meldet den Konflikt. Nach einem unterbrochenen Rückgängigmachen
-kannst du denselben `undo`-Befehl erneut ausführen.
+`recover` zeigt den Status rein lesend an. `undo` stellt die Namen in
+umgekehrter Reihenfolge wieder her. Die letzte Zeile liest aus der Datei
+unter ihrem ursprünglichen Namen wieder `Testinhalt`.
+
+Bei einem Konflikt stoppt fntidy und nennt die betroffenen Pfade. Der
+bis dahin bestätigte Fortschritt steht im Protokoll. Nach einem
+unterbrochenen Rückgängigmachen kannst du nach der Klärung denselben
+`undo`-Befehl erneut ausführen.

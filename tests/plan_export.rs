@@ -234,6 +234,41 @@ fn recursive_scan_uses_relative_paths_and_checks_collisions_per_directory() {
 }
 
 #[test]
+fn previews_the_final_path_through_renamed_parents_and_counts_blocked_entries() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("sample");
+    let nested = root.join("Fotos 📷").join("2026").join("Schweiz 🇨🇭");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(nested.join("Reise 😀.txt"), "original").unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_fntidy"))
+            .arg("plan")
+            .arg(&root)
+            .args(["--recursive", "--profile", "tidy"])
+            .output()
+            .unwrap()
+    };
+    let ready = run();
+    assert_eq!(ready.status.code(), Some(0), "{ready:?}");
+    let ready = String::from_utf8(ready.stdout).unwrap();
+    let final_target = Path::new("Fotos")
+        .join("2026")
+        .join("Schweiz")
+        .join("Reise.txt");
+    assert!(ready.contains(&format!("Final path: \"{}\"", final_target.display())));
+    assert!(ready.contains("3 proposed rename(s): 1 file, 2 folders."));
+    assert!(ready.contains("Blocked entries: 0 files, 0 folders."));
+
+    fs::create_dir(root.join("Fotos")).unwrap();
+    fs::write(nested.join("Reise.txt"), "occupied").unwrap();
+    let blocked = run();
+    assert_eq!(blocked.status.code(), Some(1), "{blocked:?}");
+    let blocked = String::from_utf8(blocked.stdout).unwrap();
+    assert!(blocked.contains("Blocked entries: 2 files, 2 folders."));
+    assert!(!blocked.contains("Final path:"));
+}
+
+#[test]
 fn recursive_plan_rejects_a_replaced_parent_even_with_the_same_file() {
     let workspace = tempfile::tempdir().unwrap();
     let root = workspace.path().join("root");
@@ -545,6 +580,7 @@ fn applies_a_recursive_batch_including_parent_directories() {
     let result = apply();
     assert_eq!(result.status.code(), Some(0), "{result:?}");
     assert!(String::from_utf8_lossy(&result.stdout).contains("10 rename(s) completed."));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("Changed: 8 files, 2 folders."));
     assert!(!root.join("Fotos 📷").exists());
     let target_directory = root.join("Fotos").join("Schweiz");
     for (source, target) in cases {
@@ -563,6 +599,11 @@ fn applies_a_recursive_batch_including_parent_directories() {
         .next()
         .unwrap()
         .unwrap();
+    let printed_path = format!(
+        "Recovery journal: {}",
+        run.path().join("run.jsonl").display()
+    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains(&printed_path));
     let log = fs::read_to_string(run.path().join("run.jsonl")).unwrap();
     let events: Vec<Value> = log
         .lines()

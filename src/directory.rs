@@ -10,7 +10,7 @@ pub struct Entry {
     pub key: Vec<u16>,
     pub name: String,
     pub redirected: bool,
-    is_dir: bool,
+    pub is_dir: bool,
 }
 
 pub struct Directory {
