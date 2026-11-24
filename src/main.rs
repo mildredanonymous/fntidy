@@ -22,7 +22,7 @@ const APPLY_HELP: &str =
 #[cfg(not(windows))]
 const APPLY_HELP: &str = "";
 
-const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory> [--recursive] [--profile windows|tidy]\n       fntidy plan <directory> [--recursive] [--profile windows|tidy] [--out <file>]\n       fntidy verify-plan <file>";
+const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory> [--recursive] [--profile windows|tidy|posix]\n       fntidy plan <directory> [--recursive] [--profile windows|tidy|posix] [--out <file>]\n       fntidy verify-plan <file>";
 
 fn main() -> ExitCode {
     let mut arguments = env::args_os().skip(1);

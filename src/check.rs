@@ -22,6 +22,7 @@ pub fn run(root: &Path, profile: Profile, recursive: bool) -> ExitCode {
         match profile {
             Profile::Windows => println!("No Windows naming violations found."),
             Profile::Tidy => println!("No tidy naming violations found."),
+            Profile::Posix => println!("No portable POSIX naming violations found."),
         }
         ExitCode::SUCCESS
     }

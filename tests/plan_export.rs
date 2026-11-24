@@ -84,6 +84,55 @@ fn verify(path: &Path) -> Output {
 }
 
 #[test]
+fn posix_checks_exports_and_verifies_portable_filename_plans() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("sample");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("Überblick 2026.pdf"), "original").unwrap();
+    let path = workspace.path().join("plan.json");
+    let command = |action: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fntidy"));
+        command.arg(action).arg(&root).args(["--profile", "posix"]);
+        command
+    };
+
+    let checked = command("check").output().unwrap();
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    assert!(String::from_utf8_lossy(&checked.stdout).contains("POSIX_INVALID_NAME"));
+    let planned = command("plan").arg("--out").arg(&path).output().unwrap();
+    assert_eq!(planned.status.code(), Some(0), "{planned:?}");
+    let plan: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(plan["profile"], "posix");
+    assert_eq!(plan["profile_version"], 1);
+    assert_eq!(plan["proposals"][0]["target"], "Ueberblick_2026.pdf");
+    assert!(verify(&path).status.success());
+
+    fs::write(root.join("UEBERBLICK_2026.pdf"), "occupied").unwrap();
+    assert_eq!(verify(&path).status.code(), Some(2));
+    fs::remove_file(root.join("UEBERBLICK_2026.pdf")).unwrap();
+
+    fs::write(root.join("📁"), "manual rename needed").unwrap();
+    assert_eq!(command("plan").output().unwrap().status.code(), Some(1));
+}
+
+#[cfg(windows)]
+#[test]
+fn posix_blocks_reserved_windows_targets() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("sample");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("CÓN.txt"), "original").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_fntidy"))
+        .arg("plan")
+        .arg(&root)
+        .args(["--profile", "posix"])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(1), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stdout).contains("CON.txt"));
+}
+
+#[test]
 fn tidy_is_opt_in_and_saved_plans_use_its_rules() {
     let workspace = tempfile::tempdir().unwrap();
     let root = workspace.path().join("sample");

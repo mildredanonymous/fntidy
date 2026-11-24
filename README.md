@@ -50,7 +50,7 @@ Windows naming rules are based on
 cargo run --locked -- plan "D:\Export"
 ```
 
-The preview uses the same directory scan and Windows profile as `check`.
+The preview uses the same directory scan and naming profile as `check`.
 It replaces each forbidden character with an underscore, removes trailing
 periods and ASCII spaces, and adds a leading underscore to reserved device
 names and names that would otherwise become empty. For example, `CON.txt`
@@ -109,10 +109,28 @@ already exists, the plan is blocked. A saved plan records its profile and
 version, which verification uses to rebuild the preview. On Windows,
 `apply` uses the same verification for file and directory renames.
 
+## Portable POSIX filenames
+
+Use `--profile posix` with `check` or `plan` to use the portable POSIX
+filename character set: ASCII letters, digits, periods, underscores, and
+hyphens. The profile also flags a leading hyphen because command-line tools
+may interpret it as an option. Empty names, `.`, and `..` are invalid.
+
+`plan` preserves portable characters and valid extensions. It transliterates
+German umlauts (for example, `Ü` to `Ue`) and sharp S, removes accents from
+letters with an ASCII base, and replaces each remaining run of unsupported
+characters with an underscore. It prefixes a leading hyphen with an
+underscore. For example, `Überblick 2026.pdf` becomes `Ueberblick_2026.pdf`.
+
+A name with a violation and no proposed result containing a letter or digit
+needs a manual rename. Such names and collisions block the plan. On Windows,
+Windows naming rules also apply to proposed targets. Saved plans record
+`posix` and are verified with the same profile.
+
 ## Check subdirectories
 
 Use `--recursive` on `check` or `plan` to include all subdirectories.
-It can be combined with either profile.
+It can be combined with any profile.
 
 ```powershell
 fntidy check "D:\Export" --recursive --profile tidy
