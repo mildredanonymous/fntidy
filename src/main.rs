@@ -1,4 +1,6 @@
 #[cfg(windows)]
+mod recovery;
+#[cfg(windows)]
 mod windows_rename;
 
 mod check;
@@ -15,7 +17,8 @@ use std::{env, path::Path, process::ExitCode};
 use profile::Profile;
 
 #[cfg(windows)]
-const APPLY_HELP: &str = "\n       fntidy apply <file>";
+const APPLY_HELP: &str =
+    "\n       fntidy apply <file>\n       fntidy recover <journal>\n       fntidy undo <journal>";
 #[cfg(not(windows))]
 const APPLY_HELP: &str = "";
 
@@ -69,6 +72,12 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         (Some(command), Some(path)) if command == "apply" && arguments.next().is_none() => {
             return plan::apply(Path::new(&path));
+        }
+        #[cfg(windows)]
+        (Some(command), Some(path))
+            if (command == "recover" || command == "undo") && arguments.next().is_none() =>
+        {
+            return recovery::run(Path::new(&path), command == "undo");
         }
         _ => return invalid_arguments(),
     }

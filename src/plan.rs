@@ -583,7 +583,7 @@ fn execute_batch(
             .as_ref()
             .map_or(&identities.root, |parents| &parents[index]);
         journal
-            .begin(&proposal.source, &proposal.target, source_id.clone())
+            .begin(&proposal.source, &proposal.target, source_id.clone(), Some(parent_id.clone()))
             .and_then(|()| rename(proposal, parent_id, source_id))
             .and_then(|()| journal.confirm())
             .map_err(|error| io::Error::other(format!(

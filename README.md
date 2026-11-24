@@ -175,4 +175,31 @@ created. Exit code `3` means the run needs review. If a target becomes
 occupied during the run, fntidy preserves the existing entry and stops.
 Completed steps remain in effect. Use the journal path printed by fntidy
 to review confirmed steps and the pending step before making further changes.
-Automatic recovery and undo are future milestones.
+
+## Inspect or undo a run
+
+Use the full path to `run.jsonl` printed by `apply`.
+
+```powershell
+fntidy recover "C:\Path\To\run.jsonl"
+fntidy undo "C:\Path\To\run.jsonl"
+```
+
+`recover` reads the journal and reports the run's progress. If the last step
+was interrupted, it compares the recorded entry identity with the entries
+at both names and reports whether the step took effect.
+
+`undo` resolves a pending apply step and restores confirmed changes in
+reverse order. Each undo step is written to the same journal before the
+rename and confirmed afterwards. If undo is interrupted, run the same
+command again to continue. If the original name is occupied or the entry
+was moved or replaced, fntidy stops and preserves the existing entries.
+Use `recover` to inspect the progress and check the reported paths before
+retrying. Running `undo` again after completion reports that the run has
+already been undone.
+
+These commands return `0` on success, `2` if the journal cannot be opened
+or parsed, and `3` if a filesystem conflict or write failure needs review.
+Journals from the earlier preview remain readable. For those runs, fntidy
+checks the recorded root and entry identities. New runs also record the
+parent directory's identity for each step.

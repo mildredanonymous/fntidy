@@ -56,5 +56,21 @@ Prüfe die Vorschläge. Wenn der Plan bereit ist, wendest du ihn so an.
 Dateien und Ordner werden von innen nach aussen umbenannt. Bei einem
 Hindernis während des Laufs stoppt fntidy. Bereits bestätigte
 Umbenennungen bleiben bestehen. Die Ausgabe nennt den Pfad zum Protokoll
-unter `%LOCALAPPDATA%\fntidy\runs`. Automatisches Rückgängigmachen,
-weitere Zielprofile und eine deutschsprachige Bedienung sind spätere Etappen.
+unter `%LOCALAPPDATA%\fntidy\runs`.
+
+## Einen Lauf prüfen oder rückgängig machen
+
+Setze `$protokoll` auf den vollständigen Pfad zur `run.jsonl`, den
+`apply` ausgegeben hat.
+
+```powershell
+$protokoll = "C:\Pfad\zum\run.jsonl"
+.\fntidy.exe recover $protokoll
+.\fntidy.exe undo $protokoll
+```
+
+`recover` zeigt den Stand rein lesend an. `undo` stellt die ursprünglichen
+Namen in umgekehrter Reihenfolge wieder her. Falls ein ursprünglicher Name
+belegt ist oder ein Eintrag inzwischen verschoben oder ersetzt wurde, stoppt
+fntidy und meldet den Konflikt. Nach einem unterbrochenen Rückgängigmachen
+kannst du denselben `undo`-Befehl erneut ausführen.

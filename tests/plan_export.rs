@@ -480,6 +480,15 @@ fn applies_one_verified_rename_and_keeps_its_recovery_journal() {
     assert_eq!(events[3]["event"], "finished");
     assert!(String::from_utf8_lossy(&result.stderr).contains("run.jsonl"));
     assert_eq!(apply().status.code(), Some(2));
+
+    let result = Command::new(env!("CARGO_BIN_EXE_fntidy"))
+        .arg("undo")
+        .arg(run.path().join("run.jsonl"))
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert_eq!(fs::read(&source).unwrap(), b"test content");
+    assert!(!target.exists());
 }
 
 #[cfg(windows)]
@@ -567,4 +576,29 @@ fn applies_a_recursive_batch_including_parent_directories() {
     assert_eq!(events[17]["source"], r"Fotos 📷\Schweiz 🇨🇭");
     assert_eq!(events[19]["source"], "Fotos 📷");
     assert_eq!(events[21]["event"], "finished");
+
+    let journal = run.path().join("run.jsonl");
+    let invoke = |command| {
+        Command::new(env!("CARGO_BIN_EXE_fntidy"))
+            .arg(command)
+            .arg(&journal)
+            .output()
+            .unwrap()
+    };
+    let before_undo = invoke("recover");
+    assert_eq!(before_undo.status.code(), Some(0), "{before_undo:?}");
+    assert!(String::from_utf8_lossy(&before_undo.stdout).contains("Apply completed"));
+    let undo = invoke("undo");
+    assert_eq!(undo.status.code(), Some(0), "{undo:?}");
+    assert!(String::from_utf8_lossy(&undo.stdout).contains("10 rename(s) reversed"));
+    assert!(!root.join("Fotos").exists());
+    for (source, _) in cases {
+        assert_eq!(fs::read(nested.join(source)).unwrap(), source.as_bytes());
+    }
+    let after_undo = invoke("recover");
+    assert_eq!(after_undo.status.code(), Some(0), "{after_undo:?}");
+    assert!(String::from_utf8_lossy(&after_undo.stdout).contains("Undo completed"));
+    let duplicate = invoke("undo");
+    assert_eq!(duplicate.status.code(), Some(0), "{duplicate:?}");
+    assert!(String::from_utf8_lossy(&duplicate.stdout).contains("already been undone"));
 }
