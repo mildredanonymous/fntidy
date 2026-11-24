@@ -19,7 +19,7 @@ const APPLY_HELP: &str = "\n       fntidy apply <file>";
 #[cfg(not(windows))]
 const APPLY_HELP: &str = "";
 
-const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory> [--profile windows|tidy]\n       fntidy plan <directory> [--profile windows|tidy] [--out <file>]\n       fntidy verify-plan <file>";
+const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory> [--recursive] [--profile windows|tidy]\n       fntidy plan <directory> [--recursive] [--profile windows|tidy] [--out <file>]\n       fntidy verify-plan <file>";
 
 fn main() -> ExitCode {
     let mut arguments = env::args_os().skip(1);
@@ -35,7 +35,12 @@ fn main() -> ExitCode {
         (Some(command), Some(directory)) if command == "check" || command == "plan" => {
             let mut profile = None;
             let mut output = None;
+            let mut recursive = false;
             while let Some(option) = arguments.next() {
+                if option == "--recursive" && !recursive {
+                    recursive = true;
+                    continue;
+                }
                 let Some(value) = arguments.next() else {
                     return invalid_arguments();
                 };
@@ -53,9 +58,9 @@ fn main() -> ExitCode {
             let root = Path::new(&directory);
             let profile = profile.unwrap_or_default();
             return if command == "check" {
-                check::run(root, profile)
+                check::run(root, profile, recursive)
             } else {
-                plan::run(root, output.as_deref().map(Path::new), profile)
+                plan::run(root, output.as_deref().map(Path::new), profile, recursive)
             };
         }
         (Some(command), Some(path)) if command == "verify-plan" && arguments.next().is_none() => {

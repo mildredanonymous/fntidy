@@ -156,6 +156,143 @@ fn tidy_is_opt_in_and_saved_plans_use_its_rules() {
 }
 
 #[test]
+fn recursive_scan_uses_relative_paths_and_checks_collisions_per_directory() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("root");
+    let good = root.join("A").join("deep");
+    let second = root.join("B");
+    fs::create_dir_all(&good).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    let source = "Foto 😀.txt";
+    fs::write(good.join(source), "first").unwrap();
+    fs::write(second.join(source), "second").unwrap();
+    let relative_source = Path::new("A").join("deep").join(source);
+    let relative_target = relative_source.with_file_name("Foto.txt");
+    let command = |action| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fntidy"));
+        command.arg(action).arg(&root).args(["--profile", "tidy"]);
+        command
+    };
+
+    assert_eq!(command("check").output().unwrap().status.code(), Some(0));
+    let check = command("check").arg("--recursive").output().unwrap();
+    assert_eq!(check.status.code(), Some(1));
+    assert!(
+        String::from_utf8(check.stdout)
+            .unwrap()
+            .contains("TIDY_EMOJI")
+    );
+
+    let plan = workspace.path().join("recursive.json");
+    let preview = || {
+        command("plan")
+            .arg("--out")
+            .arg(&plan)
+            .arg("--recursive")
+            .output()
+            .unwrap()
+    };
+    let result = preview();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let report: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
+    assert_eq!(report["schema_version"], 3);
+    assert_eq!(report["recursive"], true);
+    assert_eq!(report["proposals"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        report["proposals"][0]["source"],
+        relative_source.to_str().unwrap()
+    );
+    assert_eq!(
+        report["proposals"][0]["target"],
+        relative_target.to_str().unwrap()
+    );
+    assert_eq!(report["collisions"], serde_json::json!([]));
+    assert_eq!(verify(&plan).status.code(), Some(0));
+
+    fs::write(good.join("Foto.txt"), "occupied").unwrap();
+    assert_eq!(verify(&plan).status.code(), Some(2));
+    fs::remove_file(&plan).unwrap();
+    assert_eq!(preview().status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
+    let collision = report["collisions"][0].as_array().unwrap();
+    assert!(collision.contains(&serde_json::json!(relative_source.to_str().unwrap())));
+    assert!(collision.contains(&serde_json::json!(relative_target.to_str().unwrap())));
+    assert_eq!(fs::read_to_string(good.join(source)).unwrap(), "first");
+    assert_eq!(fs::read_to_string(second.join(source)).unwrap(), "second");
+}
+
+#[test]
+fn recursive_plan_rejects_a_replaced_parent_even_with_the_same_file() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("root");
+    let original_parent = root.join("A");
+    fs::create_dir_all(&original_parent).unwrap();
+    let source = "Foto 😀.txt";
+    fs::write(original_parent.join(source), "first").unwrap();
+    let plan = workspace.path().join("recursive.json");
+    let result = Command::new(env!("CARGO_BIN_EXE_fntidy"))
+        .arg("plan")
+        .arg(&root)
+        .args(["--recursive", "--profile", "tidy", "--out"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+
+    #[cfg(windows)]
+    {
+        let result = Command::new(env!("CARGO_BIN_EXE_fntidy"))
+            .arg("apply")
+            .arg(&plan)
+            .env("LOCALAPPDATA", workspace.path())
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(0), "{result:?}");
+        assert!(!original_parent.join(source).exists());
+        let target = original_parent.join("Foto.txt");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "first");
+        fs::rename(target, original_parent.join(source)).unwrap();
+    }
+
+    let previous = workspace.path().join("previous");
+    fs::rename(&original_parent, &previous).unwrap();
+    fs::create_dir(&original_parent).unwrap();
+    fs::rename(previous.join(source), original_parent.join(source)).unwrap();
+    let result = verify(&plan);
+    assert_eq!(result.status.code(), Some(2), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("parent directory was replaced"));
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_scan_skips_directory_links() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("root");
+    let outside = workspace.path().join("outside");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("Unseen 😀.txt"), "original").unwrap();
+    symlink(&outside, root.join("external")).unwrap();
+    symlink(&root, root.join("loop")).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_fntidy"))
+        .arg("plan")
+        .arg(&root)
+        .args(["--profile", "tidy", "--recursive"])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stdout).contains("0 proposed rename(s)"));
+    assert_eq!(
+        String::from_utf8_lossy(&result.stderr)
+            .matches("Skipped redirected entry")
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn verifies_an_unchanged_export_and_rejects_an_unknown_version() {
     let workspace = tempfile::tempdir().unwrap();
     let root = workspace.path().join("source");

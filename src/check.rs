@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, ffi::OsStr, path::Path, process::ExitCode};
+use std::{cmp::Ordering, path::Path, process::ExitCode};
 
 use crate::{
     directory::{self, display},
@@ -6,10 +6,28 @@ use crate::{
     windows_names::{self, Rule},
 };
 
-pub fn run(root: &Path, profile: Profile) -> ExitCode {
-    let Some(directory) = directory::scan(root) else {
+pub fn run(root: &Path, profile: Profile, recursive: bool) -> ExitCode {
+    let mut violations = false;
+    let Some(incomplete) = directory::walk(root, recursive, |parent, directory| {
+        violations |= check_directory(parent, directory, profile);
+    }) else {
         return ExitCode::from(2);
     };
+    if incomplete {
+        eprintln!("The directory check was incomplete.");
+        ExitCode::from(2)
+    } else if violations {
+        ExitCode::from(1)
+    } else {
+        match profile {
+            Profile::Windows => println!("No Windows naming violations found."),
+            Profile::Tidy => println!("No tidy naming violations found."),
+        }
+        ExitCode::SUCCESS
+    }
+}
+
+fn check_directory(parent: &Path, directory: directory::Directory, profile: Profile) -> bool {
     let mut violations = false;
     for group in directory
         .entries
@@ -27,23 +45,12 @@ pub fn run(root: &Path, profile: Profile) -> ExitCode {
                 println!(
                     "[{}] {id} {}: {reason}",
                     profile.name(),
-                    display(OsStr::new(name))
+                    display(parent.join(name).as_os_str())
                 );
                 violations = true;
             }
         }
     }
 
-    if directory.incomplete {
-        eprintln!("The directory check was incomplete.");
-        ExitCode::from(2)
-    } else if violations {
-        ExitCode::from(1)
-    } else {
-        match profile {
-            Profile::Windows => println!("No Windows naming violations found."),
-            Profile::Tidy => println!("No tidy naming violations found."),
-        }
-        ExitCode::SUCCESS
-    }
+    violations
 }

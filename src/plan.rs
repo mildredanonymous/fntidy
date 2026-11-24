@@ -4,7 +4,7 @@ use std::{
     fs::File,
     io::BufReader,
     io::{self, Write},
-    path::Path,
+    path::{MAIN_SEPARATOR, Path},
     process::ExitCode,
 };
 
@@ -18,6 +18,19 @@ use crate::{
 };
 
 const SCHEMA_VERSION: u32 = 2;
+const RECURSIVE_SCHEMA_VERSION: u32 = 3;
+
+fn schema_version(recursive: bool) -> u32 {
+    if recursive {
+        RECURSIVE_SCHEMA_VERSION
+    } else {
+        SCHEMA_VERSION
+    }
+}
+
+fn is_flat(recursive: &bool) -> bool {
+    !recursive
+}
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +39,8 @@ struct Report {
     root: String,
     profile: String,
     profile_version: u32,
+    #[serde(default, skip_serializing_if = "is_flat")]
+    recursive: bool,
     status: Status,
     proposals: Vec<Proposal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,6 +53,8 @@ struct Report {
 struct PlanIdentities {
     root: Identity,
     sources: Vec<Identity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parents: Option<Vec<Identity>>,
 }
 
 struct Preview {
@@ -83,7 +100,35 @@ impl ProposalStatus {
     }
 }
 
-fn preview(directory: directory::Directory, profile: Profile) -> Preview {
+fn relative_name(parent: &Path, name: &str) -> String {
+    if parent.as_os_str().is_empty() {
+        name.to_owned()
+    } else {
+        format!("{}{MAIN_SEPARATOR}{name}", parent.display())
+    }
+}
+
+fn preview(root: &Path, profile: Profile, recursive: bool) -> Option<Preview> {
+    let mut preview = Preview {
+        status: Status::Ready,
+        proposals: Vec::new(),
+        collisions: Vec::new(),
+    };
+    let incomplete = directory::walk(root, recursive, |parent, directory| {
+        let local = preview_directory(parent, directory, profile);
+        if local.status == Status::Blocked {
+            preview.status = Status::Blocked;
+        }
+        preview.proposals.extend(local.proposals);
+        preview.collisions.extend(local.collisions);
+    })?;
+    if incomplete {
+        preview.status = Status::Incomplete;
+    }
+    Some(preview)
+}
+
+fn preview_directory(parent: &Path, directory: directory::Directory, profile: Profile) -> Preview {
     let mut final_names = directory
         .entries
         .iter()
@@ -114,7 +159,7 @@ fn preview(directory: directory::Directory, profile: Profile) -> Preview {
             collisions.push(
                 group
                     .iter()
-                    .map(|(_, entry, _)| entry.name.clone())
+                    .map(|(_, entry, _)| relative_name(parent, &entry.name))
                     .collect(),
             );
         }
@@ -144,17 +189,15 @@ fn preview(directory: directory::Directory, profile: Profile) -> Preview {
                 .map(|(id, _)| id.to_owned())
                 .collect();
             proposals.push(Proposal {
-                source: entry.name.clone(),
-                target: target.clone(),
+                source: relative_name(parent, &entry.name),
+                target: relative_name(parent, target),
                 rules,
                 status,
             });
         }
     }
 
-    let status = if directory.incomplete {
-        Status::Incomplete
-    } else if blocked {
+    let status = if blocked {
         Status::Blocked
     } else {
         Status::Ready
@@ -167,15 +210,15 @@ fn preview(directory: directory::Directory, profile: Profile) -> Preview {
     }
 }
 
-pub fn run(root: &Path, output: Option<&Path>, profile: Profile) -> ExitCode {
-    let Some(directory) = directory::scan(root) else {
-        return ExitCode::from(2);
-    };
-    let Preview {
+pub fn run(root: &Path, output: Option<&Path>, profile: Profile, recursive: bool) -> ExitCode {
+    let Some(Preview {
         status,
         proposals,
         collisions,
-    } = preview(directory, profile);
+    }) = preview(root, profile, recursive)
+    else {
+        return ExitCode::from(2);
+    };
     let proposal_count = proposals.len();
 
     for collision in &collisions {
@@ -205,6 +248,7 @@ pub fn run(root: &Path, output: Option<&Path>, profile: Profile) -> ExitCode {
             root,
             output,
             profile,
+            recursive,
             Preview {
                 status,
                 proposals,
@@ -256,7 +300,9 @@ fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
     let report: Report = serde_json::from_reader(BufReader::new(File::open(path)?))?;
     let unsupported = "Unsupported plan format or rules. Create a fresh plan.";
     let profile = Profile::parse(OsStr::new(&report.profile)).ok_or(unsupported)?;
-    if report.schema_version != SCHEMA_VERSION || report.profile_version != profile.version() {
+    if report.schema_version != schema_version(report.recursive)
+        || report.profile_version != profile.version()
+    {
         return Err(unsupported.into());
     }
     if report.status != Status::Ready || !report.collisions.is_empty() {
@@ -267,8 +313,8 @@ fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
     if !root.is_absolute() {
         return Err("The saved plan must specify an absolute directory.".into());
     }
-    let directory = directory::scan(root).ok_or("Cannot scan the saved directory.")?;
-    let current = preview(directory, profile);
+    let current =
+        preview(root, profile, report.recursive).ok_or("Cannot scan the saved directory.")?;
     match current.status {
         Status::Incomplete => return Err("The current scan is incomplete. Create a fresh plan after resolving the scan errors.".into()),
         Status::Blocked => return Err("The current directory has a naming conflict or an invalid target. Run plan again to see the details.".into()),
@@ -283,9 +329,12 @@ fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
         .identities
         .as_ref()
         .ok_or("The saved plan lacks file identities. Create a fresh plan.")?;
-    let actual = capture_identities(root, &current.proposals)?;
+    let actual = capture_identities(root, &current.proposals, report.recursive)?;
     if expected.root != actual.root {
         return Err("The saved directory was replaced. Create a fresh plan.".into());
+    }
+    if expected.parents != actual.parents {
+        return Err("A parent directory was replaced or the plan lacks parent identities. Create a fresh plan.".into());
     }
     if expected.sources.len() != actual.sources.len() {
         return Err("The saved plan lacks source identities. Create a fresh plan.".into());
@@ -307,7 +356,11 @@ fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
     Ok(report)
 }
 
-fn capture_identities(root: &Path, proposals: &[Proposal]) -> io::Result<PlanIdentities> {
+fn capture_identities(
+    root: &Path,
+    proposals: &[Proposal],
+    recursive: bool,
+) -> io::Result<PlanIdentities> {
     let root_identity = identity::read(root)?;
     // On Windows canonicalize gives a verbatim base path for exact entry names.
     let base = root.canonicalize()?;
@@ -316,33 +369,54 @@ fn capture_identities(root: &Path, proposals: &[Proposal]) -> io::Result<PlanIde
             "the directory changed while recording identities",
         ));
     }
-    let sources = proposals
-        .iter()
-        .map(|proposal| {
-            let source = Path::new(&proposal.source);
-            if !matches!(source.components().next(), Some(std::path::Component::Normal(name)) if name == source.as_os_str())
-                || (cfg!(windows) && proposal.source.contains(':'))
+    let mut sources = Vec::with_capacity(proposals.len());
+    let mut parents = recursive.then(|| Vec::with_capacity(proposals.len()));
+    for proposal in proposals {
+        let mut source_path = base.clone();
+        let mut parent_id = root_identity.clone();
+        let mut components = proposal.source.split(MAIN_SEPARATOR).peekable();
+        while let Some(component) = components.next() {
+            if !directory::is_name_component(component)
+                || (!recursive && components.peek().is_some())
             {
-                return Err(io::Error::other("the source is not an unambiguous filename"));
+                return Err(io::Error::other(
+                    "the source has an ambiguous path component",
+                ));
             }
-            identity::read(&base.join(source)).map_err(|error| {
+            source_path.push(component);
+            let entry_id = identity::read(&source_path).map_err(|error| {
                 io::Error::new(
                     error.kind(),
                     format!(
                         "Cannot read the identity of {}: {error}",
-                        display(OsStr::new(&proposal.source))
+                        display(source_path.as_os_str())
                     ),
                 )
-            })
-        })
-        .collect::<io::Result<_>>()?;
+            })?;
+            if components.peek().is_some() {
+                parent_id = entry_id;
+            } else {
+                sources.push(entry_id);
+            }
+        }
+        if let Some(parents) = &mut parents {
+            parents.push(parent_id);
+        }
+    }
     Ok(PlanIdentities {
         root: root_identity,
         sources,
+        parents,
     })
 }
 
-fn export(root: &Path, output: &Path, profile: Profile, preview: Preview) -> io::Result<()> {
+fn export(
+    root: &Path,
+    output: &Path,
+    profile: Profile,
+    recursive: bool,
+    preview: Preview,
+) -> io::Result<()> {
     let absolute_root = std::path::absolute(root)?;
     let root = absolute_root.to_str().ok_or_else(|| {
         io::Error::new(
@@ -351,13 +425,14 @@ fn export(root: &Path, output: &Path, profile: Profile, preview: Preview) -> io:
         )
     })?;
     let report = Report {
-        schema_version: SCHEMA_VERSION,
+        schema_version: schema_version(recursive),
         root: root.to_owned(),
         profile: profile.name().to_owned(),
         profile_version: profile.version(),
+        recursive,
         status: preview.status,
         identities: (preview.status == Status::Ready)
-            .then(|| capture_identities(&absolute_root, &preview.proposals))
+            .then(|| capture_identities(&absolute_root, &preview.proposals, recursive))
             .transpose()?,
         proposals: preview.proposals,
         collisions: preview.collisions,
@@ -395,6 +470,7 @@ pub fn apply(path: &Path) -> ExitCode {
     let Some(PlanIdentities {
         root: root_id,
         sources,
+        parents,
     }) = report.identities
     else {
         return ExitCode::from(2);
@@ -402,6 +478,10 @@ pub fn apply(path: &Path) -> ExitCode {
     let [source_id] = sources.as_slice() else {
         return ExitCode::from(2);
     };
+    let parent_id = parents
+        .as_deref()
+        .and_then(|parents| parents.first())
+        .unwrap_or(&root_id);
     let root = Path::new(&report.root);
     let mut journal = match start_journal(&report.root, root_id.clone()) {
         Ok(journal) => journal,
@@ -415,9 +495,10 @@ pub fn apply(path: &Path) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let result = crate::windows_rename::rename(
+    let result = crate::windows_rename::rename_from_root(
         root,
         &root_id,
+        parent_id,
         &proposal.source,
         source_id,
         &proposal.target,

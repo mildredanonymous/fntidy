@@ -31,8 +31,16 @@ Mit `tidy` wird zum Beispiel aus `März  🇨🇭.tar.gz` der Name
 `März.tar.gz`. Umlaute, gültige Satzzeichen und übliche Dateiendungen
 bleiben erhalten. Bereits belegte Zielnamen blockieren den Plan.
 
+Mit `--recursive` werden auch alle Unterordner geprüft. Der folgende
+Befehl zeigt die vorgeschlagenen Umbenennungen relativ zum Testordner an.
+
+```powershell
+.\fntidy.exe plan $sample --recursive --profile tidy
+```
+
 `apply <plandatei>` kann in dieser Vorschau genau eine vorgeschlagene
-Dateiumbenennung anwenden. Verwende dafür nur Testkopien. Das Protokoll
-liegt unter `%LOCALAPPDATA%\fntidy\runs`; die Ausgabe nennt den genauen Pfad.
-Automatisches Rückgängigmachen, rekursive Verarbeitung, weitere Zielprofile
+Dateiumbenennung anwenden, auch in einem Unterordner. Verwende dafür nur
+Testkopien. Das Protokoll liegt unter `%LOCALAPPDATA%\fntidy\runs`.
+Die Ausgabe nennt den genauen Pfad.
+Automatisches Rückgängigmachen, Stapelumbenennungen, weitere Zielprofile
 und eine deutschsprachige Bedienung folgen in späteren Etappen.

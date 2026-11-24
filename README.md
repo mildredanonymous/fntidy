@@ -109,6 +109,27 @@ already exists, the plan is blocked. A saved plan records its profile and
 version, which verification uses to rebuild the preview. On Windows,
 `apply` uses the same verification and supports a single file rename.
 
+## Check subdirectories
+
+Use `--recursive` on `check` or `plan` to include all subdirectories.
+It can be combined with either profile.
+
+```powershell
+fntidy check "D:\Export" --recursive --profile tidy
+fntidy plan "D:\Export" --recursive --profile tidy --out "D:\tidy-plan.json"
+```
+
+Results identify entries by paths relative to the selected directory.
+Collisions are checked among siblings. The scan skips symbolic links and
+other reparse points. A directory that cannot be read makes the scan incomplete.
+When a directory and one of its entries both need changes, the entry's target
+is shown inside its current parent directory.
+
+Recursive exports use schema version 3 and record the scan scope and the
+identity of each proposed source's parent. `verify-plan` repeats the
+recursive scan. On Windows, `apply` can apply a plan with exactly one proposed
+file rename, including a file in a subdirectory.
+
 ## Verify a saved preview
 
 ```powershell
@@ -122,7 +143,7 @@ include changed proposals, newly occupied targets, and replaced entries.
 Identity checks use the fresh scan's source names. The command performs no
 renames.
 
-Ready exports use schema version 2 and store the root identity and one
+Ready non-recursive exports use schema version 2 and store the root identity and one
 source identity per proposal in matching order. Regenerate earlier exports
 before verifying them. Blocked and incomplete previews omit identities.
 If an identity cannot be read, exporting a ready plan or verifying it fails.
