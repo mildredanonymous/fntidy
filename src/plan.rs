@@ -229,7 +229,16 @@ fn preview_directory(parent: &Path, directory: directory::Directory, profile: Pr
             );
         }
         for (key, entry, proposal) in group {
-            let Some(target) = proposal else { continue };
+            let Some(target) = proposal else {
+                if matches!(profile, Profile::Posix)
+                    && group.len() == 1
+                    && !entry.redirected
+                    && profile.violations(&entry.name).next().is_some()
+                {
+                    blocked.count(EntryKind::of(entry));
+                }
+                continue;
+            };
             let occupied = directory.entries.as_slice().partition_point(|sibling| {
                 windows_names::compare(&sibling.key, key) == Ordering::Less
             });
@@ -237,8 +246,10 @@ fn preview_directory(parent: &Path, directory: directory::Directory, profile: Pr
                 .iter()
                 .take_while(|sibling| windows_names::compare(&sibling.key, key) == Ordering::Equal)
                 .any(|sibling| sibling.name != entry.name);
-            let invalid =
-                profile.violations(target).next().is_some() || target.encode_utf16().count() > 255;
+            let invalid = profile.violations(target).next().is_some()
+                || (cfg!(windows) && windows_names::violations(target).next().is_some())
+                || ((!matches!(profile, Profile::Posix) || cfg!(windows))
+                    && target.encode_utf16().count() > 255);
             let status = if invalid {
                 ProposalStatus::InvalidTarget
             } else if group.len() > 1 {

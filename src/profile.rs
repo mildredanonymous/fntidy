@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 
+use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::windows_names;
@@ -9,6 +10,7 @@ pub enum Profile {
     #[default]
     Windows,
     Tidy,
+    Posix,
 }
 
 impl Profile {
@@ -16,6 +18,7 @@ impl Profile {
         match value.to_str()? {
             windows_names::PROFILE => Some(Self::Windows),
             "tidy" => Some(Self::Tidy),
+            "posix" => Some(Self::Posix),
             _ => None,
         }
     }
@@ -24,18 +27,30 @@ impl Profile {
         match self {
             Self::Windows => windows_names::PROFILE,
             Self::Tidy => "tidy",
+            Self::Posix => "posix",
         }
     }
 
     pub fn version(self) -> u32 {
         match self {
-            Self::Windows | Self::Tidy => 1,
+            Self::Windows | Self::Tidy | Self::Posix => 1,
         }
     }
 
     pub fn violations(self, name: &str) -> impl Iterator<Item = (&'static str, &'static str)> {
-        let tidy_rules = match self {
+        let additional_rules = match self {
             Self::Windows => [None, None],
+            Self::Posix => [
+                (matches!(name, "" | "." | "..") || !name.chars().all(is_posix_character))
+                    .then_some((
+                        "POSIX_INVALID_NAME",
+                        "Outside the portable POSIX filename rules.",
+                    )),
+                name.starts_with('-').then_some((
+                    "POSIX_LEADING_HYPHEN",
+                    "Starts with a hyphen that command-line tools may read as an option.",
+                )),
+            ],
             Self::Tidy => [
                 name.graphemes(true)
                     .any(is_emoji)
@@ -47,13 +62,15 @@ impl Profile {
             ],
         };
         windows_names::violations(name)
+            .filter(move |_| !matches!(self, Self::Posix))
             .map(windows_names::Rule::diagnostic)
-            .chain(tidy_rules.into_iter().flatten())
+            .chain(additional_rules.into_iter().flatten())
     }
 
     pub fn repair(self, name: &str) -> Option<String> {
         match self {
             Self::Windows => windows_names::repair(name),
+            Self::Posix => repair_posix(name),
             Self::Tidy => {
                 let mut without_emoji = String::with_capacity(name.len());
                 for grapheme in name.graphemes(true) {
@@ -68,6 +85,54 @@ impl Profile {
             }
         }
     }
+}
+
+fn is_posix_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+}
+
+fn repair_posix(name: &str) -> Option<String> {
+    let mut target = String::with_capacity(name.len());
+    let mut in_invalid_run = false;
+    for character in name.nfc() {
+        let replacement = match character {
+            'ä' => "ae",
+            'ö' => "oe",
+            'ü' => "ue",
+            'Ä' => "Ae",
+            'Ö' => "Oe",
+            'Ü' => "Ue",
+            'ß' => "ss",
+            'ẞ' => "SS",
+            _ => "",
+        };
+        if !replacement.is_empty() {
+            target.push_str(replacement);
+            in_invalid_run = false;
+        } else if is_posix_character(character) {
+            target.push(character);
+            in_invalid_run = false;
+        } else {
+            let mut decomposed = std::iter::once(character).nfd();
+            if let Some(base) = decomposed.next().filter(char::is_ascii_alphabetic)
+                && decomposed.all(is_combining_mark)
+            {
+                target.push(base);
+                in_invalid_run = false;
+            } else if !in_invalid_run {
+                target.push('_');
+                in_invalid_run = true;
+            }
+        }
+    }
+    if target.starts_with('-') {
+        target.insert(0, '_');
+    }
+    (target != name
+        && target
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric()))
+    .then_some(target)
 }
 
 fn is_emoji(grapheme: &str) -> bool {
@@ -96,6 +161,32 @@ fn normalize_whitespace(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::Profile;
+
+    #[test]
+    fn posix_repairs_only_portable_filename_violations() {
+        for (source, target) in [
+            ("Überblick 2026.pdf", "Ueberblick_2026.pdf"),
+            ("U\u{308}berblick 2026.pdf", "Ueberblick_2026.pdf"),
+            ("Café ☕.txt", "Cafe_.txt"),
+            ("Cafe\u{301} ☕.txt", "Cafe_.txt"),
+            ("-entwurf.txt", "_-entwurf.txt"),
+            ("Straße Æø.tar.gz", "Strasse_.tar.gz"),
+            ("CÓN.txt", "CON.txt"),
+        ] {
+            assert_eq!(Profile::Posix.repair(source).as_deref(), Some(target));
+            assert!(Profile::Posix.violations(source).next().is_some());
+            assert!(Profile::Posix.violations(target).next().is_none());
+            assert_eq!(Profile::Posix.repair(target), None);
+        }
+        for source in ["📁", "", ".", ".."] {
+            assert!(Profile::Posix.violations(source).next().is_some());
+            assert_eq!(Profile::Posix.repair(source), None);
+        }
+        for name in [".gitignore", "Report-2026.TXT", "_"] {
+            assert!(Profile::Posix.violations(name).next().is_none());
+            assert_eq!(Profile::Posix.repair(name), None);
+        }
+    }
 
     #[test]
     fn tidy_removes_complete_emoji_sequences_and_normalizes_whitespace() {
