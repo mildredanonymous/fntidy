@@ -2,15 +2,17 @@ use std::{io, path::Path, process::ExitCode};
 
 use crate::{
     directory::display,
-    identity,
+    identity::{self, Identity},
     journal::{RecoveryLog, Run, Step},
     windows_rename::{self, RenameLocation},
 };
 
-#[derive(Debug, PartialEq, Eq)]
 enum Position {
     Original,
-    Renamed { original_free: bool },
+    Renamed {
+        original_free: bool,
+        identity: Identity,
+    },
 }
 
 pub fn run(path: &Path, undo: bool) -> ExitCode {
@@ -53,14 +55,22 @@ fn validate_root(run: &Run) -> io::Result<()> {
 }
 
 fn locate<'a>(run: &Run, step: &'a Step) -> io::Result<RenameLocation<'a>> {
-    windows_rename::locate(
+    let location = windows_rename::locate(
         Path::new(&run.root),
         &run.root_identity,
-        step.parent_identity.as_ref(),
+        None,
         &step.source,
         &step.target,
     )
-    .map_err(|error| step_error(step, error))
+    .map_err(|error| step_error(step, error))?;
+    if step
+        .parent_identity
+        .as_ref()
+        .is_some_and(|expected| !expected.same_windows_entry(location.parent_identity()))
+    {
+        return Err(step_error(step, "the parent directory was replaced"));
+    }
+    Ok(location)
 }
 
 fn step_error(step: &Step, error: impl std::fmt::Display) -> io::Error {
@@ -71,16 +81,18 @@ fn position(location: &RenameLocation<'_>, step: &Step) -> io::Result<Position> 
     let (original, renamed) = location
         .identities()
         .map_err(|error| step_error(step, error))?;
-    match (
-        original.as_ref() == Some(&step.source_identity),
-        renamed.as_ref() == Some(&step.source_identity),
-    ) {
-        (true, false) => Ok(Position::Original),
-        (false, true) => Ok(Position::Renamed {
+    let at_original = original
+        .as_ref()
+        .is_some_and(|observed| step.source_identity.same_windows_entry(observed));
+    let at_renamed = renamed.filter(|observed| step.source_identity.same_windows_entry(observed));
+    match (at_original, at_renamed) {
+        (true, None) => Ok(Position::Original),
+        (false, Some(identity)) => Ok(Position::Renamed {
             original_free: original.is_none(),
+            identity,
         }),
-        (true, true) => Err(step_error(step, "both names refer to the recorded entry")),
-        (false, false) => Err(step_error(
+        (true, Some(_)) => Err(step_error(step, "both names refer to the recorded entry")),
+        (false, None) => Err(step_error(
             step,
             "the recorded entry was moved, removed or replaced",
         )),
@@ -130,12 +142,14 @@ fn inspect(run: &Run) -> io::Result<()> {
             ),
             Position::Renamed {
                 original_free: true,
+                ..
             } => println!(
                 "Pending undo step {number} can be retried: {:?}.",
                 step.target
             ),
             Position::Renamed {
                 original_free: false,
+                ..
             } => return Err(step_error(step, "the original name is occupied")),
         }
     }
@@ -174,15 +188,17 @@ fn undo_run(journal: &mut RecoveryLog) -> io::Result<()> {
             }
             Position::Renamed {
                 original_free: false,
+                ..
             } => return Err(step_error(&step, "the original name is occupied")),
             Position::Renamed {
                 original_free: true,
+                identity,
             } => {
                 if !journal.run.undo_pending {
                     journal.begin_undo(number)?;
                 }
                 location
-                    .restore(&step.source_identity)
+                    .restore(&identity)
                     .map_err(|error| step_error(&step, error))?;
             }
         }
@@ -198,7 +214,12 @@ fn undo_run(journal: &mut RecoveryLog) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::journal::Journal;
-    use std::{fs, io::Write};
+    use std::{
+        fs,
+        io::Write,
+        os::windows::fs::FileTimesExt,
+        time::{Duration, SystemTime},
+    };
 
     #[test]
     fn resolves_unconfirmed_apply_with_or_without_the_rename() {
@@ -220,6 +241,16 @@ mod tests {
             );
             if renamed {
                 windows_rename::rename(root, &root_id, "before", &source_id, "after").unwrap();
+                let file = fs::OpenOptions::new()
+                    .write(true)
+                    .open(root.join("after"))
+                    .unwrap();
+                file.set_times(
+                    fs::FileTimes::new()
+                        .set_created(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000)),
+                )
+                .unwrap();
+                assert_ne!(identity::read(&root.join("after")).unwrap(), source_id);
             } else {
                 fs::write(root.join("after"), b"keep").unwrap();
             }

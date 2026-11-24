@@ -188,6 +188,8 @@ fntidy undo "C:\Path\To\run.jsonl"
 `recover` reads the journal and reports the run's progress. If the last step
 was interrupted, it compares the recorded entry identity with the entries
 at both names and reports whether the step took effect.
+Recovery compares the Windows volume and file ID because a rename can
+change the creation timestamp on NTFS.
 
 `undo` resolves a pending apply step and restores confirmed changes in
 reverse order. Each undo step is written to the same journal before the

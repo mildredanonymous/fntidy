@@ -112,6 +112,10 @@ pub fn locate<'a>(
 }
 
 impl RenameLocation<'_> {
+    pub fn parent_identity(&self) -> &Identity {
+        &self.parent_identity
+    }
+
     pub fn identities(&self) -> io::Result<(Option<Identity>, Option<Identity>)> {
         Ok((
             self.entry_identity(self.source)?,
