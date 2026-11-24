@@ -481,3 +481,90 @@ fn applies_one_verified_rename_and_keeps_its_recovery_journal() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("run.jsonl"));
     assert_eq!(apply().status.code(), Some(2));
 }
+
+#[cfg(windows)]
+#[test]
+fn applies_a_recursive_batch_including_parent_directories() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("test-tree");
+    let local = workspace.path().join("local");
+    let nested = root.join("Fotos 📷").join("Schweiz 🇨🇭");
+    fs::create_dir_all(&nested).unwrap();
+    let cases = [
+        ("Familie 👨‍👩‍👧‍👦.txt", "Familie.txt"),
+        ("Hand 👋🏽.txt", "Hand.txt"),
+        ("Herz ❤️.txt", "Herz.txt"),
+        ("mehrere   Leerzeichen.txt", "mehrere Leerzeichen.txt"),
+        ("mit-emoji 😀.txt", "mit-emoji.txt"),
+        ("Schweiz 🇨🇭.txt", "Schweiz.txt"),
+        ("Test 🧪📁.txt", "Test.txt"),
+        ("SchmalesNBSP\u{202f}", "SchmalesNBSP"),
+    ];
+    for (source, _) in cases {
+        fs::write(nested.join(source), source.as_bytes()).unwrap();
+    }
+    let plan = workspace.path().join("plan.json");
+    let preview = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_fntidy"));
+        cmd.arg("plan")
+            .arg(&root)
+            .args(["--profile", "tidy", "--recursive"]);
+        cmd
+    };
+    let result = preview().arg("--out").arg(&plan).output().unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stdout).contains("10 proposed rename(s)"));
+    let apply = || {
+        Command::new(env!("CARGO_BIN_EXE_fntidy"))
+            .arg("apply")
+            .arg(&plan)
+            .env("LOCALAPPDATA", &local)
+            .output()
+            .unwrap()
+    };
+
+    let occupied = nested.join("Herz.txt");
+    fs::write(&occupied, "keep me").unwrap();
+    assert_eq!(apply().status.code(), Some(2));
+    assert!(!local.exists());
+    assert_eq!(fs::read_to_string(&occupied).unwrap(), "keep me");
+    for (source, _) in cases {
+        assert_eq!(fs::read(nested.join(source)).unwrap(), source.as_bytes());
+    }
+    fs::remove_file(occupied).unwrap();
+
+    let result = apply();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stdout).contains("10 rename(s) completed."));
+    assert!(!root.join("Fotos 📷").exists());
+    let target_directory = root.join("Fotos").join("Schweiz");
+    for (source, target) in cases {
+        assert_eq!(
+            fs::read(target_directory.join(target)).unwrap(),
+            source.as_bytes()
+        );
+    }
+    assert!(
+        String::from_utf8_lossy(&preview().output().unwrap().stdout)
+            .contains("0 proposed rename(s)")
+    );
+
+    let run = fs::read_dir(local.join("fntidy").join("runs"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let log = fs::read_to_string(run.path().join("run.jsonl")).unwrap();
+    let events: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 22);
+    for index in (1..21).step_by(2) {
+        assert_eq!(events[index]["event"], "pending");
+        assert_eq!(events[index + 1]["event"], "renamed");
+    }
+    assert_eq!(events[17]["source"], r"Fotos 📷\Schweiz 🇨🇭");
+    assert_eq!(events[19]["source"], "Fotos 📷");
+    assert_eq!(events[21]["event"], "finished");
+}

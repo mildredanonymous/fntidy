@@ -78,7 +78,7 @@ and `target` names, rule IDs, and a status of `proposed`, `invalid_target`,
 relative names of all involved entries. Blocked and incomplete scans can be
 exported for inspection and retain their corresponding exit code. A scan that
 cannot open the directory produces no report. The JSON captures a preview
-snapshot for verification and single-file apply on Windows.
+snapshot for verification and batch apply on Windows.
 
 The exporter uses [Serde](https://serde.rs/) and
 [serde_json](https://docs.rs/serde_json/) for JSON mapping and escaping,
@@ -107,7 +107,7 @@ fntidy verify-plan tidy-plan.json
 For example, `März  🇨🇭.tar.gz` becomes `März.tar.gz`. If that target
 already exists, the plan is blocked. A saved plan records its profile and
 version, which verification uses to rebuild the preview. On Windows,
-`apply` uses the same verification and supports a single file rename.
+`apply` uses the same verification for file and directory renames.
 
 ## Check subdirectories
 
@@ -130,8 +130,7 @@ is shown inside its current parent directory.
 
 Recursive exports use schema version 3 and record the scan scope and the
 identity of each proposed source's parent. `verify-plan` repeats the
-recursive scan. On Windows, `apply` can apply a plan with exactly one proposed
-file rename, including a file in a subdirectory.
+recursive scan. `apply` uses that same scope on Windows.
 
 ## Verify a saved preview
 
@@ -165,9 +164,15 @@ for Microsoft's [FileIdInfo API](https://learn.microsoft.com/en-us/windows/win32
 The Windows x64 GitHub Actions run packages the executable with
 [German quick-start instructions](START-HERE.md).
 
-On Windows, `fntidy apply plan.json` can apply one proposed file rename.
-It validates the saved plan again, records the step before renaming,
-and keeps the completed journal under `%LOCALAPPDATA%\fntidy\runs`.
-An exit code of `3` means the journal needs review. Keep the journal and
-inspect the source and target paths. Automatic recovery and undo are
-future milestones.
+On Windows, `fntidy apply plan.json` applies the file and directory renames
+in a saved plan. It validates the entire plan before changing any names.
+Deeper entries are renamed before their parent directories. Each step is
+recorded in the journal under `%LOCALAPPDATA%\fntidy\runs` before the
+rename, with a separate confirmation afterwards.
+
+Exit code `2` means the plan was rejected or the journal could not be
+created. Exit code `3` means the run needs review. If a target becomes
+occupied during the run, fntidy preserves the existing entry and stops.
+Completed steps remain in effect. Use the journal path printed by fntidy
+to review confirmed steps and the pending step before making further changes.
+Automatic recovery and undo are future milestones.

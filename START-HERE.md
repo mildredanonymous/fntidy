@@ -38,9 +38,23 @@ Befehl zeigt die vorgeschlagenen Umbenennungen relativ zum Testordner an.
 .\fntidy.exe plan $sample --recursive --profile tidy
 ```
 
-`apply <plandatei>` kann in dieser Vorschau genau eine vorgeschlagene
-Dateiumbenennung anwenden, auch in einem Unterordner. Verwende dafür nur
-Testkopien. Das Protokoll liegt unter `%LOCALAPPDATA%\fntidy\runs`.
-Die Ausgabe nennt den genauen Pfad.
-Automatisches Rückgängigmachen, Stapelumbenennungen, weitere Zielprofile
-und eine deutschsprachige Bedienung folgen in späteren Etappen.
+## Einen Plan auf eine Testkopie anwenden
+
+```powershell
+$ordner = "C:\Pfad\zur\Testkopie"
+$plan = Join-Path $env:TEMP "fntidy-$([guid]::NewGuid()).json"
+.\fntidy.exe plan $ordner --recursive --profile tidy --out $plan
+.\fntidy.exe verify-plan $plan
+```
+
+Prüfe die Vorschläge. Wenn der Plan bereit ist, wendest du ihn so an.
+
+```powershell
+.\fntidy.exe apply $plan
+```
+
+Dateien und Ordner werden von innen nach aussen umbenannt. Bei einem
+Hindernis während des Laufs stoppt fntidy. Bereits bestätigte
+Umbenennungen bleiben bestehen. Die Ausgabe nennt den Pfad zum Protokoll
+unter `%LOCALAPPDATA%\fntidy\runs`. Automatisches Rückgängigmachen,
+weitere Zielprofile und eine deutschsprachige Bedienung sind spätere Etappen.

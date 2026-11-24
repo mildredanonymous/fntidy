@@ -525,65 +525,165 @@ pub fn apply(path: &Path) -> ExitCode {
         }
     };
 
-    let [proposal] = report.proposals.as_slice() else {
-        if report.proposals.is_empty() {
-            println!("The plan contains no renames.");
-            return ExitCode::SUCCESS;
-        }
-        eprintln!("This preview applies only plans with one proposed file rename.");
+    if report.proposals.is_empty() {
+        println!("The plan contains no renames.");
+        return ExitCode::SUCCESS;
+    }
+    let Some(identities) = &report.identities else {
         return ExitCode::from(2);
     };
-    let Some(PlanIdentities {
-        root: root_id,
-        sources,
-        parents,
-    }) = report.identities
-    else {
-        return ExitCode::from(2);
-    };
-    let [source_id] = sources.as_slice() else {
-        return ExitCode::from(2);
-    };
-    let parent_id = parents
-        .as_deref()
-        .and_then(|parents| parents.first())
-        .unwrap_or(&root_id);
     let root = Path::new(&report.root);
-    let mut journal = match start_journal(&report.root, root_id.clone()) {
+    let mut journal = match start_journal(&report.root, identities.root.clone()) {
         Ok(journal) => journal,
         Err(error) => {
             eprintln!("Cannot create the recovery journal: {error}");
             return ExitCode::from(2);
         }
     };
-    if let Err(error) = journal.begin(&proposal.source, &proposal.target, source_id.clone()) {
-        eprintln!("Cannot record the rename: {error}");
-        return ExitCode::from(2);
-    }
-
-    let result = crate::windows_rename::rename_from_root(
-        root,
-        &root_id,
-        parent_id,
-        &proposal.source,
-        source_id,
-        &proposal.target,
-    )
-    .and_then(|()| journal.confirm())
-    .and_then(|()| journal.finish());
-    if let Err(error) = result {
-        eprintln!(
-            "The run needs review. Keep the journal and check the source and target: {error}"
-        );
+    if let Err(error) = execute_batch(
+        &report.proposals,
+        identities,
+        &mut journal,
+        |proposal, parent_id, source_id| {
+            crate::windows_rename::rename_from_root(
+                root,
+                &identities.root,
+                parent_id,
+                &proposal.source,
+                source_id,
+                &proposal.target,
+            )
+        },
+    ) {
+        eprintln!("{error} Keep the recovery journal.");
         return ExitCode::from(3);
     }
 
-    println!(
-        "Renamed {} to {}.",
-        display(OsStr::new(&proposal.source)),
-        display(OsStr::new(&proposal.target)),
-    );
+    println!("{} rename(s) completed.", report.proposals.len());
     ExitCode::SUCCESS
+}
+
+#[cfg(windows)]
+fn execute_batch(
+    proposals: &[Proposal],
+    identities: &PlanIdentities,
+    journal: &mut crate::journal::Journal,
+    mut rename: impl FnMut(&Proposal, &Identity, &Identity) -> io::Result<()>,
+) -> io::Result<()> {
+    // A directory keeps its original path until all proposed edits below it are complete.
+    let mut order: Vec<_> = (0..proposals.len()).collect();
+    order.sort_by_cached_key(|&index| {
+        std::cmp::Reverse(proposals[index].source.split(MAIN_SEPARATOR).count())
+    });
+    for (completed, index) in order.into_iter().enumerate() {
+        let proposal = &proposals[index];
+        let source_id = &identities.sources[index];
+        let parent_id = identities
+            .parents
+            .as_ref()
+            .map_or(&identities.root, |parents| &parents[index]);
+        journal
+            .begin(&proposal.source, &proposal.target, source_id.clone())
+            .and_then(|()| rename(proposal, parent_id, source_id))
+            .and_then(|()| journal.confirm())
+            .map_err(|error| io::Error::other(format!(
+                "Stopped after {completed} of {} confirmed rename(s). Could not complete \"{}\" -> \"{}\": {error}.",
+                proposals.len(), preview_path(&proposal.source), preview_path(&proposal.target),
+            )))?;
+        println!(
+            "Renamed \"{}\" to \"{}\".",
+            preview_path(&proposal.source),
+            preview_path(&proposal.target)
+        );
+    }
+    journal.finish().map_err(|error| {
+        io::Error::other(format!(
+            "All {} rename(s) were confirmed, but the journal could not be finalized: {error}.",
+            proposals.len(),
+        ))
+    })
+}
+
+#[cfg(all(test, windows))]
+mod batch_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn stops_a_batch_when_a_target_becomes_occupied_during_apply() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().join("test-tree");
+        fs::create_dir(&root).unwrap();
+        for name in ["A 😀.txt", "B 😀.txt", "C 😀.txt"] {
+            fs::write(root.join(name), name).unwrap();
+        }
+        let plan_path = workspace.path().join("plan.json");
+        let profile = Profile::Tidy;
+        export(
+            &root,
+            &plan_path,
+            profile,
+            true,
+            preview(&root, profile, true).unwrap(),
+        )
+        .unwrap();
+        let report = verify_report(&plan_path).unwrap();
+        let identities = report.identities.unwrap();
+        let log = workspace.path().join("run.jsonl");
+        let mut journal =
+            crate::journal::Journal::create(&log, &report.root, identities.root.clone()).unwrap();
+        let result = execute_batch(
+            &report.proposals,
+            &identities,
+            &mut journal,
+            |proposal, parent_id, source_id| {
+                if proposal.source == "B 😀.txt" {
+                    fs::write(root.join("B.txt"), "external file")?;
+                }
+                crate::windows_rename::rename_from_root(
+                    &root,
+                    &identities.root,
+                    parent_id,
+                    &proposal.source,
+                    source_id,
+                    &proposal.target,
+                )
+            },
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Stopped after 1 of 3 confirmed")
+        );
+        drop(journal);
+
+        assert_eq!(fs::read_to_string(root.join("A.txt")).unwrap(), "A 😀.txt");
+        assert!(!root.join("A 😀.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("B.txt")).unwrap(),
+            "external file"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("B 😀.txt")).unwrap(),
+            "B 😀.txt"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("C 😀.txt")).unwrap(),
+            "C 😀.txt"
+        );
+        assert!(!root.join("C.txt").exists());
+        let records: Vec<serde_json::Value> = fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[1]["source"], "A 😀.txt");
+        assert_eq!(records[2]["event"], "renamed");
+        assert_eq!(records[3]["event"], "pending");
+        assert_eq!(records[3]["source"], "B 😀.txt");
+    }
 }
 
 #[cfg(windows)]
