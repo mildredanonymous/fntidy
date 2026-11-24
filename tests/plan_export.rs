@@ -84,6 +84,78 @@ fn verify(path: &Path) -> Output {
 }
 
 #[test]
+fn tidy_is_opt_in_and_saved_plans_use_its_rules() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("sample");
+    fs::create_dir(&root).unwrap();
+    let source = root.join("März  🇨🇭.txt");
+    let target = root.join("März.txt");
+    fs::write(&source, "original").unwrap();
+
+    let command = |action: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fntidy"));
+        command.arg(action).arg(&root);
+        command
+    };
+    assert_eq!(command("check").output().unwrap().status.code(), Some(0));
+    let checked = command("check")
+        .args(["--profile", "tidy"])
+        .output()
+        .unwrap();
+    assert_eq!(checked.status.code(), Some(1));
+    let findings = String::from_utf8(checked.stdout).unwrap();
+    assert!(findings.contains("TIDY_EMOJI"));
+    assert!(findings.contains("TIDY_WHITESPACE"));
+
+    let plan = workspace.path().join("tidy.json");
+    let preview = || {
+        command("plan")
+            .arg("--out")
+            .arg(&plan)
+            .args(["--profile", "tidy"])
+            .output()
+            .unwrap()
+    };
+    let result = preview();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let exported: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
+    assert_eq!(exported["profile"], "tidy");
+    assert_eq!(exported["profile_version"], 1);
+    assert_eq!(exported["proposals"][0]["target"], "März.txt");
+    assert_eq!(
+        exported["proposals"][0]["rules"],
+        serde_json::json!(["TIDY_EMOJI", "TIDY_WHITESPACE"])
+    );
+    assert_eq!(verify(&plan).status.code(), Some(0));
+    assert!(!target.exists());
+
+    fs::write(&target, "occupied").unwrap();
+    assert_eq!(verify(&plan).status.code(), Some(2));
+    fs::remove_file(&plan).unwrap();
+    assert_eq!(preview().status.code(), Some(1));
+    let blocked: Value = serde_json::from_slice(&fs::read(&plan).unwrap()).unwrap();
+    assert_eq!(blocked["proposals"][0]["status"], "proposed_collision");
+    assert_eq!(fs::read_to_string(&source).unwrap(), "original");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "occupied");
+
+    #[cfg(windows)]
+    {
+        fs::remove_file(&target).unwrap();
+        fs::remove_file(&plan).unwrap();
+        assert_eq!(preview().status.code(), Some(0));
+        let result = Command::new(env!("CARGO_BIN_EXE_fntidy"))
+            .arg("apply")
+            .arg(&plan)
+            .env("LOCALAPPDATA", workspace.path())
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(0), "{result:?}");
+        assert!(!source.exists());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+    }
+}
+
+#[test]
 fn verifies_an_unchanged_export_and_rejects_an_unknown_version() {
     let workspace = tempfile::tempdir().unwrap();
     let root = workspace.path().join("source");

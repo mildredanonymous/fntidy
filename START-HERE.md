@@ -20,6 +20,17 @@ Der gültige Name ergibt keine Verstösse und keine vorgeschlagene Umbenennung.
 Zum Prüfen eigener Namen verwende möglichst einen Ordner mit Kopien. Die
 geprüften Dateien bleiben bei diesen Befehlen unverändert.
 
+## Emojis und Leerzeichen bereinigen
+
+```powershell
+.\fntidy.exe check $sample --profile tidy
+.\fntidy.exe plan $sample --profile tidy --out "$sample-tidy.json"
+```
+
+Mit `tidy` wird zum Beispiel aus `März  🇨🇭.tar.gz` der Name
+`März.tar.gz`. Umlaute, gültige Satzzeichen und übliche Dateiendungen
+bleiben erhalten. Bereits belegte Zielnamen blockieren den Plan.
+
 `apply <plandatei>` kann in dieser Vorschau genau eine vorgeschlagene
 Dateiumbenennung anwenden. Verwende dafür nur Testkopien. Das Protokoll
 liegt unter `%LOCALAPPDATA%\fntidy\runs`; die Ausgabe nennt den genauen Pfad.

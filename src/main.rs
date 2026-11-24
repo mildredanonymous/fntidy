@@ -7,16 +7,19 @@ mod identity;
 #[cfg(any(windows, test))]
 mod journal;
 mod plan;
+mod profile;
 mod windows_names;
 
 use std::{env, path::Path, process::ExitCode};
+
+use profile::Profile;
 
 #[cfg(windows)]
 const APPLY_HELP: &str = "\n       fntidy apply <file>";
 #[cfg(not(windows))]
 const APPLY_HELP: &str = "";
 
-const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory>\n       fntidy plan <directory> [--out <file>]\n       fntidy verify-plan <file>";
+const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory> [--profile windows|tidy]\n       fntidy plan <directory> [--profile windows|tidy] [--out <file>]\n       fntidy verify-plan <file>";
 
 fn main() -> ExitCode {
     let mut arguments = env::args_os().skip(1);
@@ -29,18 +32,31 @@ fn main() -> ExitCode {
         (Some(option), None) if option == "--version" || option == "-V" => {
             println!("fntidy {}", env!("CARGO_PKG_VERSION"));
         }
-        (Some(command), Some(directory)) if command == "check" && arguments.next().is_none() => {
-            return check::run(Path::new(&directory));
-        }
-        (Some(command), Some(directory)) if command == "plan" => {
-            let output = match (arguments.next().as_deref(), arguments.next()) {
-                (None, None) => None,
-                (Some(option), Some(path)) if option == "--out" && arguments.next().is_none() => {
-                    Some(path)
+        (Some(command), Some(directory)) if command == "check" || command == "plan" => {
+            let mut profile = None;
+            let mut output = None;
+            while let Some(option) = arguments.next() {
+                let Some(value) = arguments.next() else {
+                    return invalid_arguments();
+                };
+                if option == "--profile" && profile.is_none() {
+                    let Some(selected) = Profile::parse(&value) else {
+                        return invalid_arguments();
+                    };
+                    profile = Some(selected);
+                } else if option == "--out" && command == "plan" && output.is_none() {
+                    output = Some(value);
+                } else {
+                    return invalid_arguments();
                 }
-                _ => return invalid_arguments(),
+            }
+            let root = Path::new(&directory);
+            let profile = profile.unwrap_or_default();
+            return if command == "check" {
+                check::run(root, profile)
+            } else {
+                plan::run(root, output.as_deref().map(Path::new), profile)
             };
-            return plan::run(Path::new(&directory), output.as_deref().map(Path::new));
         }
         (Some(command), Some(path)) if command == "verify-plan" && arguments.next().is_none() => {
             return plan::verify(Path::new(&path));

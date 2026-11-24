@@ -77,13 +77,37 @@ and `target` names, rule IDs, and a status of `proposed`, `invalid_target`,
 `proposed_collision`, or `existing_sibling`. Collision groups list the
 relative names of all involved entries. Blocked and incomplete scans can be
 exported for inspection and retain their corresponding exit code. A scan that
-cannot open the directory produces no report. The JSON currently captures a
-preview snapshot. Applying saved plans is a future feature.
+cannot open the directory produces no report. The JSON captures a preview
+snapshot for verification and single-file apply on Windows.
 
 The exporter uses [Serde](https://serde.rs/) and
 [serde_json](https://docs.rs/serde_json/) for JSON mapping and escaping,
 and [tempfile](https://docs.rs/tempfile/) to publish the completed file
 without overwriting an existing output.
+
+## Opt-in cleanup profile
+
+Use `--profile tidy` with either command to apply extra naming rules in the
+check or preview. The default profile is `windows`.
+
+```powershell
+fntidy check "D:\Export" --profile tidy
+fntidy plan "D:\Export" --profile tidy --out tidy-plan.json
+fntidy verify-plan tidy-plan.json
+```
+
+- `TIDY_EMOJI` removes recognised Unicode emoji sequences, including flags
+  and joined emoji, treating them as word separators.
+- `TIDY_WHITESPACE` trims Unicode whitespace, collapses internal runs to a
+  single ASCII space, and removes spaces next to periods.
+- The Windows repairs still apply. Empty names and newly exposed leading
+  periods get an underscore where needed. Accents, other writing systems,
+  ordinary punctuation and typical extensions are preserved.
+
+For example, `März  🇨🇭.tar.gz` becomes `März.tar.gz`. If that target
+already exists, the plan is blocked. A saved plan records its profile and
+version, which verification uses to rebuild the preview. On Windows,
+`apply` uses the same verification and supports a single file rename.
 
 ## Verify a saved preview
 

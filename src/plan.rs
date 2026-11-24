@@ -13,11 +13,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     directory::{self, display},
     identity::{self, Identity},
+    profile::Profile,
     windows_names,
 };
 
 const SCHEMA_VERSION: u32 = 2;
-const PROFILE_VERSION: u32 = 1;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -83,7 +83,7 @@ impl ProposalStatus {
     }
 }
 
-fn preview(directory: directory::Directory) -> Preview {
+fn preview(directory: directory::Directory, profile: Profile) -> Preview {
     let mut final_names = directory
         .entries
         .iter()
@@ -91,7 +91,7 @@ fn preview(directory: directory::Directory) -> Preview {
             let proposal = if entry.redirected {
                 None
             } else {
-                windows_names::repair(&entry.name)
+                profile.repair(&entry.name)
             };
             let key = proposal
                 .as_deref()
@@ -127,8 +127,8 @@ fn preview(directory: directory::Directory) -> Preview {
                 .iter()
                 .take_while(|sibling| windows_names::compare(&sibling.key, key) == Ordering::Equal)
                 .any(|sibling| sibling.name != entry.name);
-            let invalid = windows_names::violations(target).next().is_some()
-                || target.encode_utf16().count() > 255;
+            let invalid =
+                profile.violations(target).next().is_some() || target.encode_utf16().count() > 255;
             let status = if invalid {
                 ProposalStatus::InvalidTarget
             } else if group.len() > 1 {
@@ -139,8 +139,9 @@ fn preview(directory: directory::Directory) -> Preview {
                 ProposalStatus::Proposed
             };
             blocked |= invalid || occupied_by_sibling;
-            let rules = windows_names::violations(&entry.name)
-                .map(|rule| rule.diagnostic().0.to_owned())
+            let rules = profile
+                .violations(&entry.name)
+                .map(|(id, _)| id.to_owned())
                 .collect();
             proposals.push(Proposal {
                 source: entry.name.clone(),
@@ -166,7 +167,7 @@ fn preview(directory: directory::Directory) -> Preview {
     }
 }
 
-pub fn run(root: &Path, output: Option<&Path>) -> ExitCode {
+pub fn run(root: &Path, output: Option<&Path>, profile: Profile) -> ExitCode {
     let Some(directory) = directory::scan(root) else {
         return ExitCode::from(2);
     };
@@ -174,7 +175,7 @@ pub fn run(root: &Path, output: Option<&Path>) -> ExitCode {
         status,
         proposals,
         collisions,
-    } = preview(directory);
+    } = preview(directory, profile);
     let proposal_count = proposals.len();
 
     for collision in &collisions {
@@ -183,11 +184,15 @@ pub fn run(root: &Path, output: Option<&Path>) -> ExitCode {
             .map(|name| display(OsStr::new(name)))
             .collect::<Vec<_>>()
             .join(", ");
-        println!("[windows] WIN_NAME_COLLISION: These entries would share a Windows name: {names}");
+        println!(
+            "[{}] WIN_NAME_COLLISION: These entries would share a Windows name: {names}",
+            profile.name()
+        );
     }
     for proposal in &proposals {
         println!(
-            "[windows] {} -> {} ({}; {})",
+            "[{}] {} -> {} ({}; {})",
+            profile.name(),
             display(OsStr::new(&proposal.source)),
             display(OsStr::new(&proposal.target)),
             proposal.status.description(),
@@ -199,6 +204,7 @@ pub fn run(root: &Path, output: Option<&Path>) -> ExitCode {
         if let Err(error) = export(
             root,
             output,
+            profile,
             Preview {
                 status,
                 proposals,
@@ -248,11 +254,10 @@ pub fn verify(path: &Path) -> ExitCode {
 
 fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
     let report: Report = serde_json::from_reader(BufReader::new(File::open(path)?))?;
-    if report.schema_version != SCHEMA_VERSION
-        || report.profile != windows_names::PROFILE
-        || report.profile_version != PROFILE_VERSION
-    {
-        return Err("Unsupported plan format or rules. Create a fresh plan.".into());
+    let unsupported = "Unsupported plan format or rules. Create a fresh plan.";
+    let profile = Profile::parse(OsStr::new(&report.profile)).ok_or(unsupported)?;
+    if report.schema_version != SCHEMA_VERSION || report.profile_version != profile.version() {
+        return Err(unsupported.into());
     }
     if report.status != Status::Ready || !report.collisions.is_empty() {
         return Err("The saved plan is blocked or incomplete. Create a fresh plan.".into());
@@ -263,7 +268,7 @@ fn verify_report(path: &Path) -> Result<Report, Box<dyn std::error::Error>> {
         return Err("The saved plan must specify an absolute directory.".into());
     }
     let directory = directory::scan(root).ok_or("Cannot scan the saved directory.")?;
-    let current = preview(directory);
+    let current = preview(directory, profile);
     match current.status {
         Status::Incomplete => return Err("The current scan is incomplete. Create a fresh plan after resolving the scan errors.".into()),
         Status::Blocked => return Err("The current directory has a naming conflict or an invalid target. Run plan again to see the details.".into()),
@@ -337,7 +342,7 @@ fn capture_identities(root: &Path, proposals: &[Proposal]) -> io::Result<PlanIde
     })
 }
 
-fn export(root: &Path, output: &Path, preview: Preview) -> io::Result<()> {
+fn export(root: &Path, output: &Path, profile: Profile, preview: Preview) -> io::Result<()> {
     let absolute_root = std::path::absolute(root)?;
     let root = absolute_root.to_str().ok_or_else(|| {
         io::Error::new(
@@ -348,8 +353,8 @@ fn export(root: &Path, output: &Path, preview: Preview) -> io::Result<()> {
     let report = Report {
         schema_version: SCHEMA_VERSION,
         root: root.to_owned(),
-        profile: windows_names::PROFILE.to_owned(),
-        profile_version: PROFILE_VERSION,
+        profile: profile.name().to_owned(),
+        profile_version: profile.version(),
         status: preview.status,
         identities: (preview.status == Status::Ready)
             .then(|| capture_identities(&absolute_root, &preview.proposals))

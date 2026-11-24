@@ -2,10 +2,11 @@ use std::{cmp::Ordering, ffi::OsStr, path::Path, process::ExitCode};
 
 use crate::{
     directory::{self, display},
+    profile::Profile,
     windows_names::{self, Rule},
 };
 
-pub fn run(root: &Path) -> ExitCode {
+pub fn run(root: &Path, profile: Profile) -> ExitCode {
     let Some(directory) = directory::scan(root) else {
         return ExitCode::from(2);
     };
@@ -19,13 +20,13 @@ pub fn run(root: &Path) -> ExitCode {
             if entry.redirected {
                 continue;
             }
-            for rule in windows_names::violations(name)
-                .chain((group.len() > 1).then_some(Rule::NameCollision))
+            for (id, reason) in profile
+                .violations(name)
+                .chain((group.len() > 1).then_some(Rule::NameCollision.diagnostic()))
             {
-                let (id, reason) = rule.diagnostic();
                 println!(
                     "[{}] {id} {}: {reason}",
-                    windows_names::PROFILE,
+                    profile.name(),
                     display(OsStr::new(name))
                 );
                 violations = true;
@@ -39,7 +40,10 @@ pub fn run(root: &Path) -> ExitCode {
     } else if violations {
         ExitCode::from(1)
     } else {
-        println!("No Windows naming violations found.");
+        match profile {
+            Profile::Windows => println!("No Windows naming violations found."),
+            Profile::Tidy => println!("No tidy naming violations found."),
+        }
         ExitCode::SUCCESS
     }
 }
