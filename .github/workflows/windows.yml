@@ -1,0 +1,35 @@
+name: Windows x64
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build and test
+        run: |
+          rustup update stable
+          cargo +stable build --release --locked --target x86_64-pc-windows-msvc
+          cargo +stable test --release --locked --target x86_64-pc-windows-msvc
+      - name: Package the tested executable
+        run: |
+          New-Item -ItemType Directory -Path preview
+          Copy-Item target/x86_64-pc-windows-msvc/release/fntidy.exe, START-HERE.md, LICENSE -Destination preview
+          & ./preview/fntidy.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: fntidy-windows-x64-preview
+          path: preview/
+          if-no-files-found: error
+          retention-days: 30
