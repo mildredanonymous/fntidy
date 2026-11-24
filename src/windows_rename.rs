@@ -1,9 +1,8 @@
 use std::{
-    ffi::OsStr,
     fs::File,
     io, mem,
     os::windows::io::AsRawHandle,
-    path::{Component, Path},
+    path::{MAIN_SEPARATOR, Path, PathBuf},
     ptr,
 };
 
@@ -17,22 +16,55 @@ use windows_sys::{
 };
 
 use crate::{
+    directory::is_name_component,
     identity::{self, Identity},
     windows_names,
 };
 
-pub fn rename(
+pub fn rename_from_root(
     root: &Path,
     expected_root: &Identity,
+    expected_parent: &Identity,
     source: &str,
     expected_source: &Identity,
     target: &str,
 ) -> io::Result<()> {
-    if !matches!(Path::new(source).components().next(), Some(Component::Normal(name)) if name == OsStr::new(source))
-        || source.contains([':', '\0'])
-        || target.is_empty()
+    let rename = locate(root, expected_root, Some(expected_parent), source, target)?;
+    if windows_names::violations(rename.target).next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid rename target",
+        ));
+    }
+    rename.rename_entry(rename.source, rename.target, expected_source)
+}
+
+pub struct RenameLocation<'a> {
+    base: PathBuf,
+    directories: Vec<File>,
+    parent_identity: Identity,
+    source: &'a str,
+    target: &'a str,
+}
+
+pub fn locate<'a>(
+    root: &Path,
+    expected_root: &Identity,
+    expected_parent: Option<&Identity>,
+    source: &'a str,
+    target: &'a str,
+) -> io::Result<RenameLocation<'a>> {
+    if source.starts_with(MAIN_SEPARATOR) || target.starts_with(MAIN_SEPARATOR) {
+        return Err(io::Error::other("rename paths must be relative"));
+    }
+    let (parent, source) = source.rsplit_once(MAIN_SEPARATOR).unwrap_or(("", source));
+    let (target_parent, target) = target.rsplit_once(MAIN_SEPARATOR).unwrap_or(("", target));
+    if parent != target_parent
+        || !is_name_component(source)
+        || !is_name_component(target)
+        || source == target
+        || source.encode_utf16().count() > 255
         || target.encode_utf16().count() > 255
-        || windows_names::violations(target).next().is_some()
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -40,27 +72,113 @@ pub fn rename(
         ));
     }
 
-    // Keep the directory open without delete sharing throughout the operation.
-    let directory = identity::open(root, FILE_READ_ATTRIBUTES, 0)?;
-    if !directory.metadata()?.is_dir() || identity::from_handle(&directory)? != *expected_root {
+    // Hold each directory without delete sharing while resolving the nested path.
+    let root_handle = identity::open(root, FILE_READ_ATTRIBUTES, 0)?;
+    if !root_handle.metadata()?.is_dir() || identity::from_handle(&root_handle)? != *expected_root {
         return Err(io::Error::other("the directory was replaced"));
     }
-    let base = root.canonicalize()?;
+    let mut base = root.canonicalize()?;
     if identity::read(&base)? != *expected_root {
         return Err(io::Error::other("the directory path changed"));
+    }
+    let mut directories = vec![root_handle];
+    if !parent.is_empty() {
+        for component in parent.split(MAIN_SEPARATOR) {
+            if !is_name_component(component) {
+                return Err(io::Error::other("invalid parent path component"));
+            }
+            base.push(component);
+            let directory = identity::open(&base, FILE_READ_ATTRIBUTES, 0)?;
+            if !directory.metadata()?.is_dir() {
+                return Err(io::Error::other("the parent path contains a non-directory"));
+            }
+            identity::from_handle(&directory)?;
+            directories.push(directory);
+        }
+    }
+    let directory = directories.last().expect("the root directory is open");
+    let parent_identity = identity::from_handle(directory)?;
+    if expected_parent.is_some_and(|expected| *expected != parent_identity) {
+        return Err(io::Error::other("the parent directory was replaced"));
     }
 
-    let entry = identity::open(&base.join(source), DELETE | FILE_READ_ATTRIBUTES, 0)?;
-    if !entry.metadata()?.is_file() {
-        return Err(io::Error::other("this preview only renames files"));
+    Ok(RenameLocation {
+        base,
+        directories,
+        parent_identity,
+        source,
+        target,
+    })
+}
+
+impl RenameLocation<'_> {
+    pub fn parent_identity(&self) -> &Identity {
+        &self.parent_identity
     }
-    if identity::from_handle(&entry)? != *expected_source {
-        return Err(io::Error::other("the source was replaced"));
+
+    pub fn identities(&self) -> io::Result<(Option<Identity>, Option<Identity>)> {
+        Ok((
+            self.entry_identity(self.source)?,
+            self.entry_identity(self.target)?,
+        ))
     }
-    if identity::read(&base)? != *expected_root {
-        return Err(io::Error::other("the directory path changed"));
+
+    fn entry_identity(&self, name: &str) -> io::Result<Option<Identity>> {
+        let path = self.base.join(name);
+        let id = match identity::read(&path) {
+            Ok(id) => id,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        // Case-insensitive lookup can open a differently spelled directory entry.
+        if path.canonicalize()?.file_name() != Some(std::ffi::OsStr::new(name)) {
+            return Err(io::Error::other(
+                "an entry uses a different spelling than the journal",
+            ));
+        }
+        Ok(Some(id))
     }
-    rename_handle(&directory, &entry, target)
+
+    pub fn restore(&self, expected_source: &Identity) -> io::Result<()> {
+        // The original name may be Win32-invalid, such as a trailing dot. Both
+        // names have already been checked as single, unambiguous native components.
+        self.rename_entry(self.target, self.source, expected_source)
+    }
+
+    fn rename_entry(
+        &self,
+        source: &str,
+        target: &str,
+        expected_source: &Identity,
+    ) -> io::Result<()> {
+        let entry = identity::open(&self.base.join(source), DELETE | FILE_READ_ATTRIBUTES, 0)?;
+        if identity::from_handle(&entry)? != *expected_source {
+            return Err(io::Error::other("the source was replaced"));
+        }
+        if identity::read(&self.base)? != self.parent_identity {
+            return Err(io::Error::other("the directory path changed"));
+        }
+        let directory = self.directories.last().expect("the root directory is open");
+        rename_handle(directory, &entry, target)
+    }
+}
+
+#[cfg(test)]
+pub fn rename(
+    root: &Path,
+    expected_root: &Identity,
+    source: &str,
+    expected_source: &Identity,
+    target: &str,
+) -> io::Result<()> {
+    rename_from_root(
+        root,
+        expected_root,
+        expected_root,
+        source,
+        expected_source,
+        target,
+    )
 }
 
 fn rename_handle(directory: &File, entry: &File, target: &str) -> io::Result<()> {

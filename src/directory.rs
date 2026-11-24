@@ -1,4 +1,8 @@
-use std::{ffi::OsStr, fs, path::Path};
+use std::{
+    ffi::OsStr,
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use crate::windows_names;
 
@@ -6,6 +10,7 @@ pub struct Entry {
     pub key: Vec<u16>,
     pub name: String,
     pub redirected: bool,
+    pub is_dir: bool,
 }
 
 pub struct Directory {
@@ -13,7 +18,62 @@ pub struct Directory {
     pub incomplete: bool,
 }
 
-pub fn scan(root: &Path) -> Option<Directory> {
+pub fn walk(root: &Path, recursive: bool, mut visit: impl FnMut(&Path, Directory)) -> Option<bool> {
+    let first = scan(root)?;
+    if !recursive {
+        let incomplete = first.incomplete;
+        visit(Path::new(""), first);
+        return Some(incomplete);
+    }
+
+    let base = match root.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Cannot resolve {}: {error}", display(root.as_os_str()));
+            visit(Path::new(""), first);
+            return Some(true);
+        }
+    };
+    let mut pending = Vec::new();
+    let mut incomplete = false;
+    let mut visit_directory = |parent: &Path, directory: Directory, pending: &mut Vec<PathBuf>| {
+        let mut incomplete = directory.incomplete;
+        for entry in directory
+            .entries
+            .iter()
+            .rev()
+            .filter(|entry| entry.is_dir && !entry.redirected)
+        {
+            if is_name_component(&entry.name) {
+                pending.push(parent.join(&entry.name));
+            } else {
+                eprintln!(
+                    "Cannot descend into {}: ambiguous directory name.",
+                    display(OsStr::new(&entry.name))
+                );
+                incomplete = true;
+            }
+        }
+        visit(parent, directory);
+        incomplete
+    };
+    incomplete |= visit_directory(Path::new(""), first, &mut pending);
+    while let Some(parent) = pending.pop() {
+        match scan(&base.join(&parent)) {
+            Some(directory) => incomplete |= visit_directory(&parent, directory, &mut pending),
+            None => incomplete = true,
+        }
+    }
+    Some(incomplete)
+}
+
+pub fn is_name_component(name: &str) -> bool {
+    matches!(Path::new(name).components().next(), Some(Component::Normal(component)) if component == name)
+        && !name.contains('\0')
+        && !(cfg!(windows) && name.contains(':'))
+}
+
+fn scan(root: &Path) -> Option<Directory> {
     let root = root.components().collect::<std::path::PathBuf>();
     let root = root.as_path();
     let metadata = match fs::symlink_metadata(root) {
@@ -72,6 +132,7 @@ pub fn scan(root: &Path) -> Option<Directory> {
             key: windows_names::comparison_units(&name),
             name,
             redirected,
+            is_dir: metadata.is_dir(),
         });
     }
 

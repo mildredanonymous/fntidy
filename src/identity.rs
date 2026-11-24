@@ -16,6 +16,26 @@ pub enum Identity {
     },
 }
 
+#[cfg(windows)]
+impl Identity {
+    pub fn same_windows_entry(&self, other: &Self) -> bool {
+        // NTFS can inherit a former name's creation time during a rename.
+        match (self, other) {
+            (
+                Self::Windows {
+                    volume, file_id, ..
+                },
+                Self::Windows {
+                    volume: other_volume,
+                    file_id: other_id,
+                    ..
+                },
+            ) => volume == other_volume && file_id == other_id,
+            _ => false,
+        }
+    }
+}
+
 #[cfg(unix)]
 pub fn read(path: &Path) -> io::Result<Identity> {
     use std::os::unix::fs::MetadataExt;

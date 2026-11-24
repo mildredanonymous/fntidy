@@ -1,4 +1,6 @@
 #[cfg(windows)]
+mod recovery;
+#[cfg(windows)]
 mod windows_rename;
 
 mod check;
@@ -7,16 +9,20 @@ mod identity;
 #[cfg(any(windows, test))]
 mod journal;
 mod plan;
+mod profile;
 mod windows_names;
 
 use std::{env, path::Path, process::ExitCode};
 
+use profile::Profile;
+
 #[cfg(windows)]
-const APPLY_HELP: &str = "\n       fntidy apply <file>";
+const APPLY_HELP: &str =
+    "\n       fntidy apply <file>\n       fntidy recover <journal>\n       fntidy undo <journal>";
 #[cfg(not(windows))]
 const APPLY_HELP: &str = "";
 
-const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory>\n       fntidy plan <directory> [--out <file>]\n       fntidy verify-plan <file>";
+const HELP: &str = "Usage: fntidy [--help | --version]\n       fntidy check <directory> [--recursive] [--profile windows|tidy|posix]\n       fntidy plan <directory> [--recursive] [--profile windows|tidy|posix] [--out <file>]\n       fntidy verify-plan <file>";
 
 fn main() -> ExitCode {
     let mut arguments = env::args_os().skip(1);
@@ -29,18 +35,36 @@ fn main() -> ExitCode {
         (Some(option), None) if option == "--version" || option == "-V" => {
             println!("fntidy {}", env!("CARGO_PKG_VERSION"));
         }
-        (Some(command), Some(directory)) if command == "check" && arguments.next().is_none() => {
-            return check::run(Path::new(&directory));
-        }
-        (Some(command), Some(directory)) if command == "plan" => {
-            let output = match (arguments.next().as_deref(), arguments.next()) {
-                (None, None) => None,
-                (Some(option), Some(path)) if option == "--out" && arguments.next().is_none() => {
-                    Some(path)
+        (Some(command), Some(directory)) if command == "check" || command == "plan" => {
+            let mut profile = None;
+            let mut output = None;
+            let mut recursive = false;
+            while let Some(option) = arguments.next() {
+                if option == "--recursive" && !recursive {
+                    recursive = true;
+                    continue;
                 }
-                _ => return invalid_arguments(),
+                let Some(value) = arguments.next() else {
+                    return invalid_arguments();
+                };
+                if option == "--profile" && profile.is_none() {
+                    let Some(selected) = Profile::parse(&value) else {
+                        return invalid_arguments();
+                    };
+                    profile = Some(selected);
+                } else if option == "--out" && command == "plan" && output.is_none() {
+                    output = Some(value);
+                } else {
+                    return invalid_arguments();
+                }
+            }
+            let root = Path::new(&directory);
+            let profile = profile.unwrap_or_default();
+            return if command == "check" {
+                check::run(root, profile, recursive)
+            } else {
+                plan::run(root, output.as_deref().map(Path::new), profile, recursive)
             };
-            return plan::run(Path::new(&directory), output.as_deref().map(Path::new));
         }
         (Some(command), Some(path)) if command == "verify-plan" && arguments.next().is_none() => {
             return plan::verify(Path::new(&path));
@@ -48,6 +72,12 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         (Some(command), Some(path)) if command == "apply" && arguments.next().is_none() => {
             return plan::apply(Path::new(&path));
+        }
+        #[cfg(windows)]
+        (Some(command), Some(path))
+            if (command == "recover" || command == "undo") && arguments.next().is_none() =>
+        {
+            return recovery::run(Path::new(&path), command == "undo");
         }
         _ => return invalid_arguments(),
     }
